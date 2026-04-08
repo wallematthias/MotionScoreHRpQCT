@@ -40,6 +40,7 @@ setup(
         'test': [
             'pytest>=7',
             'pytest-cov>=4',
+            'matplotlib',
         ],
     },
     python_requires='>=3.10',
