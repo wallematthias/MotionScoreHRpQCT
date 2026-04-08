@@ -1,0 +1,20 @@
+name = "motionscore-license-api"
+main = "src/index.ts"
+compatibility_date = "2026-04-08"
+account_id = "fe6ff63c728e8e47b9177572139ce734"
+
+[[r2_buckets]]
+binding = "MODELS_BUCKET"
+bucket_name = "motionscore-models"
+
+[vars]
+SUPABASE_URL = "https://ucghcgmpsfbgxkfaovec.supabase.co"
+MAX_DEVICES = "2"
+LICENSE_DURATION_DAYS = "365"
+MODEL_OBJECT_PREFIX = "models"
+ALLOWED_ORIGIN = "*"
+
+# Set via `wrangler secret put ...`
+# SUPABASE_SERVICE_ROLE_KEY
+# JWT_SECRET
+# MODEL_MASTER_KEY
