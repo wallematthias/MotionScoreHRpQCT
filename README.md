@@ -1,6 +1,6 @@
 # MotionScoreHRpQCT
 
-![MotionScoreHRpQCT logo](resources/MotionScoreHRpQCT.png)
+<img src="resources/MotionScoreHRpQCT.png" alt="MotionScoreHRpQCT logo" width="240" />
 
 Motion scoring for HR-pQCT scans using deep convolutional neural networks.
 
