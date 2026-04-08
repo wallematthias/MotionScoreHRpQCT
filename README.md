@@ -11,6 +11,10 @@ Motion scoring for HR-pQCT scans using deep convolutional neural networks.
 
 This refactor provides a dataset-first pipeline with BIDS-style derivatives and review-state persistence for direct Slicer integration.
 
+Related repositories:
+- Core pipeline (this repo): https://github.com/wallematthias/MotionScoreHRpQCT
+- Slicer extension: https://github.com/wallematthias/SlicerMotionScoreHRpQCT
+
 ## What Changed In v2
 
 - Legacy CLI commands `grade` and `confirm` are removed.
@@ -159,6 +163,9 @@ This repository is core logic only. A separate Slicer extension should:
 3. request `motionscore explain ...` on demand to overlay Grad-CAM maps,
 4. optionally show `preview/*_preview.png` for quick QC,
 5. load all outputs from derivatives without ad hoc state files.
+
+Reference Slicer repository:
+- https://github.com/wallematthias/SlicerMotionScoreHRpQCT
 
 ## Citation
 

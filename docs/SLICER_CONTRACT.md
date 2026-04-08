@@ -4,6 +4,10 @@ This repository provides core pipeline logic only.
 
 A separate Slicer extension repository should use the following contract.
 
+Repository links:
+- Core pipeline: https://github.com/wallematthias/MotionScoreHRpQCT
+- Slicer extension: https://github.com/wallematthias/SlicerMotionScoreHRpQCT
+
 ## Primary UX
 
 - `Run` button
