@@ -1,6 +1,11 @@
+<img src="resources/MotionScoreHRpQCT.png" alt="MotionScoreHRpQCT logo" width="240" />
+
 # MotionScoreHRpQCT
 
-<img src="resources/MotionScoreHRpQCT.png" alt="MotionScoreHRpQCT logo" width="240" />
+[![CI](https://github.com/wallematthias/MotionScoreHRpQCT/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wallematthias/MotionScoreHRpQCT/actions/workflows/ci.yml)
+[![Coverage Gate](https://img.shields.io/badge/coverage%20gate-70%25-brightgreen)](https://github.com/wallematthias/MotionScoreHRpQCT/blob/main/.github/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/motionscorehrpqct.svg)](https://pypi.org/project/motionscorehrpqct/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/motionscorehrpqct.svg)](https://pypi.org/project/motionscorehrpqct/)
 
 Motion scoring for HR-pQCT scans using deep convolutional neural networks.
 
