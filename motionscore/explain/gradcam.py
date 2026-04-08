@@ -21,7 +21,13 @@ def _slice_gradcam_torch(model: Any, image_tensor: np.ndarray, class_index: int)
         raise RuntimeError("PyTorch is required for torch Grad-CAM generation.") from exc
 
     model.zero_grad(set_to_none=True)
+    try:
+        model_device = next(model.parameters()).device
+    except Exception:
+        model_device = torch.device("cpu")
+
     image = torch.from_numpy(np.asarray(image_tensor, dtype=np.float32)).permute(0, 3, 1, 2).contiguous()
+    image = image.to(model_device)
     image.requires_grad_(True)
 
     probs, features = model(image, return_features=True)

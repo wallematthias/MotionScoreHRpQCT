@@ -225,8 +225,9 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         raise ValueError("confidence threshold must be in [0, 100]")
     preview_panels = int(max(1, min(9, int(args.preview_panels))))
 
-    ensemble = ModelEnsemble(args.model_dir)
+    ensemble = ModelEnsemble(args.model_dir, device=args.device)
     model_version = ensemble.model_version()
+    print(f"[predict] using torch device={ensemble.model_device()}")
 
     index_updates: list[dict[str, str]] = []
     for session in sessions:
@@ -475,7 +476,8 @@ def _cmd_explain(args: argparse.Namespace) -> int:
             return 0
 
     session = _session_from_index(hit)
-    ensemble = ModelEnsemble(args.model_dir)
+    ensemble = ModelEnsemble(args.model_dir, device=args.device)
+    print(f"[explain] using torch device={ensemble.model_device()}")
     aim_volume = read_aim(session.raw_image_path, scaling=args.scaling)
     prediction = predict_scan(
         aim_volume.data,
@@ -523,6 +525,7 @@ def _build_parser() -> argparse.ArgumentParser:
     predict.add_argument("input_root", type=Path)
     predict.add_argument("--output-root", type=Path, default=None)
     predict.add_argument("--model-dir", type=Path, default=None)
+    predict.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "mps", "cuda"])
     predict.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
     predict.add_argument("--stackheight", type=int, default=168)
     predict.add_argument(
@@ -575,6 +578,7 @@ def _build_parser() -> argparse.ArgumentParser:
     explain.add_argument("derivatives_root", type=Path)
     explain.add_argument("--scan-id", required=True)
     explain.add_argument("--model-dir", type=Path, default=None)
+    explain.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "mps", "cuda"])
     explain.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
     explain.add_argument("--stackheight", type=int, default=168)
     explain.add_argument(

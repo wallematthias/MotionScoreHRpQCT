@@ -49,3 +49,9 @@ derivatives/
 **/derivatives/
 *.mha
 motion_grades.tsv
+
+# Test/build artifacts
+.coverage
+coverage.xml
+build/
+dist/

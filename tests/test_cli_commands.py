@@ -13,11 +13,15 @@ from motionscore.utils import read_tsv
 
 
 class _FakeEnsemble:
-    def __init__(self, model_dir=None):
+    def __init__(self, model_dir=None, device="auto"):
         self.model_dir = model_dir
+        self.device = device
 
     def model_version(self):
         return "DNN_0.pt+DNN_1.pt"
+
+    def model_device(self):
+        return self.device
 
 
 class _FakePrediction:
@@ -37,6 +41,7 @@ def _predict_args(root: Path) -> argparse.Namespace:
         input_root=root,
         output_root=None,
         model_dir=None,
+        device="cpu",
         scaling="native",
         stackheight=4,
         slice_batch_size=4,
@@ -221,6 +226,7 @@ def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp
         derivatives_root=derivatives,
         scan_id="x",
         model_dir=None,
+        device="cpu",
         scaling="native",
         stackheight=4,
         slice_batch_size=4,
@@ -250,6 +256,7 @@ def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp
         derivatives_root=derivatives,
         scan_id="x",
         model_dir=None,
+        device="cpu",
         scaling="native",
         stackheight=4,
         slice_batch_size=4,

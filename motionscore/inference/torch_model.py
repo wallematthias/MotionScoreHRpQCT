@@ -67,13 +67,14 @@ def build_torch_model():
     return MotionScoreTorchNet()
 
 
-def load_torch_model(model_path: Path):
+def load_torch_model(model_path: Path, device: str = "cpu"):
     model_path = Path(model_path).resolve()
     model = build_torch_model()
     torch, _ = _require_torch()
+    torch_device = torch.device(str(device))
 
     if model_path.suffix.lower() == ".pt":
-        payload = torch.load(str(model_path), map_location="cpu")
+        payload = torch.load(str(model_path), map_location=torch_device)
         if isinstance(payload, dict) and "state_dict" in payload:
             state_dict = payload["state_dict"]
         elif isinstance(payload, dict):
@@ -84,5 +85,6 @@ def load_torch_model(model_path: Path):
     else:
         raise ValueError(f"Unsupported model format: {model_path}")
 
+    model.to(torch_device)
     model.eval()
     return model

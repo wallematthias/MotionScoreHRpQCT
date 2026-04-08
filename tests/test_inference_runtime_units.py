@@ -31,17 +31,23 @@ def test_modelensemble_init_and_load_cache(monkeypatch: pytest.MonkeyPatch, tmp_
     _touch(tmp_path / "DNN_0.pt")
     calls = {"n": 0}
 
-    def _fake_loader(path):
+    def _fake_loader(path, device="cpu"):
         calls["n"] += 1
         return SimpleNamespace(path=path, __call__=lambda _x: np.zeros((1, 5), dtype=np.float32))
 
     monkeypatch.setattr(model_mod, "load_torch_model", _fake_loader)
-    ens = model_mod.ModelEnsemble(model_dir=tmp_path)
+    ens = model_mod.ModelEnsemble(model_dir=tmp_path, device="cpu")
     ens.load()
     ens.load()
     assert calls["n"] == 1
     assert ens.model_version() == "DNN_0.pt"
     assert len(ens.grad_models()) == 1
+    assert ens.model_device() == "cpu"
+
+
+def test_modelensemble_rejects_bad_device(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="device must be one of"):
+        model_mod.ModelEnsemble(model_dir=tmp_path, device="metal")
 
 
 def test_modelensemble_predict_missing_torch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -90,10 +96,14 @@ def test_load_torch_model_rejects_non_pt(monkeypatch: pytest.MonkeyPatch, tmp_pa
             return None
 
     monkeypatch.setattr(torch_mod, "build_torch_model", lambda: _FakeModel())
-    monkeypatch.setattr(torch_mod, "_require_torch", lambda: (SimpleNamespace(load=lambda *_a, **_k: {}), SimpleNamespace()))
+    fake_torch = SimpleNamespace(
+        load=lambda *_a, **_k: {},
+        device=lambda x: x,
+    )
+    monkeypatch.setattr(torch_mod, "_require_torch", lambda: (fake_torch, SimpleNamespace()))
 
     with pytest.raises(ValueError, match="Unsupported model format"):
-        torch_mod.load_torch_model(model_path)
+        torch_mod.load_torch_model(model_path, device="cpu")
 
 
 def test_load_torch_model_rejects_invalid_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -107,9 +117,12 @@ def test_load_torch_model_rejects_invalid_payload(monkeypatch: pytest.MonkeyPatc
         def eval(self):
             return None
 
-    fake_torch = SimpleNamespace(load=lambda *_a, **_k: "bad-payload")
+    fake_torch = SimpleNamespace(
+        load=lambda *_a, **_k: "bad-payload",
+        device=lambda x: x,
+    )
     monkeypatch.setattr(torch_mod, "build_torch_model", lambda: _FakeModel())
     monkeypatch.setattr(torch_mod, "_require_torch", lambda: (fake_torch, SimpleNamespace()))
 
     with pytest.raises(ValueError, match="Unsupported .pt payload format"):
-        torch_mod.load_torch_model(model_path)
+        torch_mod.load_torch_model(model_path, device="cpu")
