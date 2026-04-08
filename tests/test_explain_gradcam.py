@@ -15,7 +15,7 @@ def test_generate_gradcam_attention_map_with_mocked_slice_gradcam(monkeypatch) -
     def fake_slice_gradcam(_grad_model, _image_tensor, _class_idx):
         return np.ones((512, 512), dtype=np.float32)
 
-    monkeypatch.setattr(gc, "_slice_gradcam", fake_slice_gradcam)
+    monkeypatch.setattr(gc, "_slice_gradcam_torch", fake_slice_gradcam)
 
     volume = np.zeros((8, 6, 3), dtype=np.float32)
     infos = [

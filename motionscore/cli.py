@@ -155,16 +155,6 @@ def _scan_id_for_session(session: RawSession) -> str:
     return make_scan_id(session.subject_id, session.site, session.session_id, session.raw_image_path)
 
 
-def _warn_backend_deprecation(backend: str, command_name: str) -> None:
-    if str(backend).strip().lower() != "tensorflow":
-        return
-    print(
-        f"[deprecation] '{command_name}' is using deprecated backend 'tensorflow'. "
-        "Please migrate to '--backend torch'. TensorFlow backend will be removed in a future release.",
-        file=sys.stderr,
-    )
-
-
 def _cmd_discover(args: argparse.Namespace) -> int:
     cfg = AppConfig()
     sessions = discover_raw_sessions(
@@ -200,7 +190,6 @@ def _cmd_discover(args: argparse.Namespace) -> int:
 def _cmd_predict(args: argparse.Namespace) -> int:
     from motionscore.inference.model import ModelEnsemble
 
-    _warn_backend_deprecation(args.backend, "predict")
     cfg = AppConfig()
     sessions = discover_raw_sessions(
         root=args.input_root,
@@ -236,7 +225,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         raise ValueError("confidence threshold must be in [0, 100]")
     preview_panels = int(max(1, min(9, int(args.preview_panels))))
 
-    ensemble = ModelEnsemble(args.model_dir, backend=args.backend)
+    ensemble = ModelEnsemble(args.model_dir)
     model_version = ensemble.model_version()
 
     index_updates: list[dict[str, str]] = []
@@ -469,7 +458,6 @@ def _cmd_explain(args: argparse.Namespace) -> int:
             "Install with: pip install -e '.[explain]'"
         ) from exc
 
-    _warn_backend_deprecation(args.backend, "explain")
     derivatives_root = _normalize_derivatives_root(Path(args.derivatives_root).resolve())
     index_rows = _read_index(derivatives_root)
     if not index_rows:
@@ -487,7 +475,7 @@ def _cmd_explain(args: argparse.Namespace) -> int:
             return 0
 
     session = _session_from_index(hit)
-    ensemble = ModelEnsemble(args.model_dir, backend=args.backend)
+    ensemble = ModelEnsemble(args.model_dir)
     aim_volume = read_aim(session.raw_image_path, scaling=args.scaling)
     prediction = predict_scan(
         aim_volume.data,
@@ -518,21 +506,10 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_convert_torch(args: argparse.Namespace) -> int:
-    from motionscore.inference.model import ModelEnsemble
-
-    ensemble = ModelEnsemble(args.model_dir, backend="torch")
-    converted = ensemble.convert_h5_to_torch(output_dir=args.output_dir, overwrite=bool(args.overwrite))
-    print(f"[convert-torch] converted {len(converted)} model(s)")
-    for p in converted:
-        print(f"  {p}")
-    return 0
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="motionscore",
-        description="MotionScore dataset pipeline (discover, predict, review, explain, export, convert-torch)",
+        description="MotionScore dataset pipeline (discover, predict, review, explain, export)",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -546,13 +523,6 @@ def _build_parser() -> argparse.ArgumentParser:
     predict.add_argument("input_root", type=Path)
     predict.add_argument("--output-root", type=Path, default=None)
     predict.add_argument("--model-dir", type=Path, default=None)
-    predict.add_argument(
-        "--backend",
-        type=str,
-        default="tensorflow",
-        choices=["tensorflow", "torch"],
-        help="Inference backend (tensorflow is deprecated; torch recommended)",
-    )
     predict.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
     predict.add_argument("--stackheight", type=int, default=168)
     predict.add_argument(
@@ -605,13 +575,6 @@ def _build_parser() -> argparse.ArgumentParser:
     explain.add_argument("derivatives_root", type=Path)
     explain.add_argument("--scan-id", required=True)
     explain.add_argument("--model-dir", type=Path, default=None)
-    explain.add_argument(
-        "--backend",
-        type=str,
-        default="tensorflow",
-        choices=["tensorflow", "torch"],
-        help="Inference backend (tensorflow is deprecated; torch recommended)",
-    )
     explain.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
     explain.add_argument("--stackheight", type=int, default=168)
     explain.add_argument(
@@ -626,14 +589,6 @@ def _build_parser() -> argparse.ArgumentParser:
     export = subparsers.add_parser("export", help="Export final grades across all scans")
     export.add_argument("derivatives_root", type=Path)
     export.add_argument("--output", type=Path, default=None)
-
-    convert_torch = subparsers.add_parser(
-        "convert-torch",
-        help="Convert Keras .h5 ensemble weights to torch .pt files",
-    )
-    convert_torch.add_argument("--model-dir", type=Path, default=None)
-    convert_torch.add_argument("--output-dir", type=Path, default=None)
-    convert_torch.add_argument("--overwrite", action="store_true")
 
     return parser
 
@@ -657,8 +612,6 @@ def main() -> None:
             raise SystemExit(_cmd_explain(args))
         if args.command == "export":
             raise SystemExit(_cmd_export(args))
-        if args.command == "convert-torch":
-            raise SystemExit(_cmd_convert_torch(args))
 
         raise SystemExit(1)
     except SystemExit:

@@ -13,33 +13,6 @@ if TYPE_CHECKING:
     from motionscore.inference.model import ModelEnsemble
 
 
-def _slice_gradcam(grad_model: Any, image_tensor: np.ndarray, class_index: int) -> np.ndarray:
-    try:
-        import tensorflow as tf
-    except Exception as exc:
-        raise RuntimeError("TensorFlow is required for Grad-CAM generation.") from exc
-
-    image = tf.convert_to_tensor(image_tensor, dtype=tf.float32)
-    with tf.GradientTape() as tape:
-        conv_outputs, preds = grad_model(image, training=False)
-        loss = preds[:, class_index]
-
-    grads = tape.gradient(loss, conv_outputs)
-    if grads is None:
-        return np.zeros((512, 512), dtype=np.float32)
-
-    pooled_grads = tf.reduce_mean(grads, axis=(1, 2))
-    conv = conv_outputs[0]
-    weights = pooled_grads[0]
-    cam = tf.reduce_sum(conv * weights, axis=-1)
-    cam = tf.nn.relu(cam)
-
-    max_val = tf.reduce_max(cam)
-    cam = tf.where(max_val > 0, cam / (max_val + 1e-8), tf.zeros_like(cam))
-    cam = tf.image.resize(cam[..., tf.newaxis], (512, 512), method="bilinear")
-    return tf.squeeze(cam, axis=-1).numpy().astype(np.float32)
-
-
 def _slice_gradcam_torch(model: Any, image_tensor: np.ndarray, class_index: int) -> np.ndarray:
     try:
         import torch
@@ -103,13 +76,8 @@ def generate_gradcam_attention_map(
         slice_input = np.expand_dims(slice_input, axis=0).astype(np.float32)
 
         cams = []
-        backend = getattr(ensemble, "backend", "tensorflow")
-        if backend == "torch":
-            for model in grad_models:
-                cams.append(_slice_gradcam_torch(model, slice_input, class_index))
-        else:
-            for grad_model in grad_models:
-                cams.append(_slice_gradcam(grad_model, slice_input, class_index))
+        for model in grad_models:
+            cams.append(_slice_gradcam_torch(model, slice_input, class_index))
         mean_cam = np.mean(cams, axis=0)
 
         restored = inverse_resize_heatmap(mean_cam, prediction.preprocess_infos[z])

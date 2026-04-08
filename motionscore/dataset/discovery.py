@@ -188,7 +188,10 @@ def _role_from_header(path: Path) -> str | None:
     except Exception as exc:  # pragma: no cover
         raise ValueError("py_aimio unavailable for header role detection") from exc
 
-    meta = dict(py_aimio.aim_info(str(path)))
+    try:
+        meta = dict(py_aimio.aim_info(str(path)))
+    except Exception as exc:
+        raise ValueError(f"failed to read AIM header role for {path.name}") from exc
     processing_log = _processing_log_as_text(meta)
     return _infer_role_from_processing_log(processing_log)
 
@@ -199,7 +202,10 @@ def _extract_from_header(path: Path, cfg: DiscoveryConfig) -> tuple[str, str, st
     except Exception as exc:  # pragma: no cover
         raise ValueError("py_aimio unavailable for header fallback") from exc
 
-    meta = dict(py_aimio.aim_info(str(path)))
+    try:
+        meta = dict(py_aimio.aim_info(str(path)))
+    except Exception as exc:
+        raise ValueError(f"failed to read AIM header for {path.name}") from exc
     processing_log = _processing_log_as_text(meta)
     log_dict = _parse_processing_log_to_dict(processing_log)
 

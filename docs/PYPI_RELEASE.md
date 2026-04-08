@@ -19,8 +19,8 @@ This project publishes to PyPI via GitHub Actions using trusted publishing.
 3. Create and push a version tag:
 
 ```bash
-git tag v2.1.0
-git push origin v2.1.0
+git tag v2.2.0
+git push origin v2.2.0
 ```
 
 4. GitHub Actions will:

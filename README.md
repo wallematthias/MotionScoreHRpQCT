@@ -1,5 +1,7 @@
 # MotionScoreHRpQCT
 
+![MotionScoreHRpQCT logo](resources/MotionScoreHRpQCT.png)
+
 Motion scoring for HR-pQCT scans using deep convolutional neural networks.
 
 This refactor provides a dataset-first pipeline with BIDS-style derivatives and review-state persistence for direct Slicer integration.
@@ -43,20 +45,13 @@ conda activate motionscore
 # git clone <repo-url>
 # cd MotionScoreHRpQCT
 
-# Unified install (cross-platform TensorFlow extra)
-pip install -e ".[tensorflow]"
-
-# Or install torch backend instead
+# Install CLI + torch inference backend
 pip install -e ".[torch]"
 ```
 
-Backward-compatible extras are still available: `.[mac]` and `.[unix]`.
-
-Note: TensorFlow backend is deprecated and planned for removal in a future release. Prefer `--backend torch`.
-
 ## Models
 
-Place model files (for example `DNN_0.h5` ... `DNN_9.h5`) in one of these locations:
+Place torch model files (for example `DNN_0.pt` ... `DNN_9.pt`) in one of these locations:
 
 - `./models`
 - `motionscore/models`
@@ -77,8 +72,6 @@ motionscore discover /path/to/dataset --json
 
 ```bash
 motionscore predict /path/to/dataset --confidence-threshold 75
-# torch backend
-motionscore predict /path/to/dataset --backend torch --confidence-threshold 75
 # blinded operator training mode
 motionscore predict /path/to/dataset --training-mode
 # optional: restrict to one scan_id (repeat flag for multiple)
@@ -135,21 +128,7 @@ motionscore review-clear /path/to/dataset/derivatives/MotionScore --all-reviewer
 ```bash
 motionscore explain /path/to/dataset/derivatives/MotionScore \
   --scan-id sub-001_site-tibia_ses-T1_abcdef1234
-
-# torch backend
-motionscore explain /path/to/dataset/derivatives/MotionScore \
-  --scan-id sub-001_site-tibia_ses-T1_abcdef1234 \
-  --backend torch
 ```
-
-### 7) Convert Keras weights to torch files
-
-```bash
-motionscore convert-torch --model-dir ./models --output-dir ./models
-python scripts/convert_h5_to_torch.py --model-dir ./models --output-dir ./models
-```
-
-Detailed migration workflow: `docs/PYTORCH_CONVERSION.md`.
 
 ### 6) Export final grade table
 

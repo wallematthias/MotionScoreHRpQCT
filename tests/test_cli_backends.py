@@ -1,14 +1,14 @@
 from motionscore.cli import _build_parser
 
 
-def test_predict_backend_choices() -> None:
+def test_predict_parses_without_backend_flag() -> None:
     parser = _build_parser()
-    args = parser.parse_args(["predict", "/tmp/data", "--backend", "torch"])
+    args = parser.parse_args(["predict", "/tmp/data"])
     assert args.command == "predict"
-    assert args.backend == "torch"
+    assert args.model_dir is None
 
 
-def test_explain_backend_choices() -> None:
+def test_explain_parses_without_backend_flag() -> None:
     parser = _build_parser()
     args = parser.parse_args(
         [
@@ -16,18 +16,10 @@ def test_explain_backend_choices() -> None:
             "/tmp/data/derivatives/MotionScore",
             "--scan-id",
             "scan_1",
-            "--backend",
-            "tensorflow",
         ]
     )
     assert args.command == "explain"
-    assert args.backend == "tensorflow"
-
-
-def test_convert_torch_command_exists() -> None:
-    parser = _build_parser()
-    args = parser.parse_args(["convert-torch"])
-    assert args.command == "convert-torch"
+    assert args.scan_id == "scan_1"
 
 
 def test_predict_preview_flags() -> None:
