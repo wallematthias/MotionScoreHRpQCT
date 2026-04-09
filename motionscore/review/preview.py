@@ -118,7 +118,8 @@ def write_slice_profile_png(
     if conf.size != grades.size:
         raise ValueError("slice_confidences length must match slice_grades length")
 
-    z = np.arange(grades.size, dtype=np.int32)
+    n_slices = int(grades.size)
+    x = np.arange(n_slices, dtype=np.float32) + 0.5
     valid_conf = np.isfinite(conf) & (conf >= 0.0)
     conf_pct = conf.astype(np.float32, copy=True)
     if np.any(valid_conf) and float(np.nanmax(conf[valid_conf])) <= 1.0:
@@ -146,11 +147,11 @@ def write_slice_profile_png(
     fig, ax_stack = plt.subplots(figsize=(8.2, 2.6), dpi=130)
     ax_conf = ax_stack.twinx()
 
-    bottom = np.zeros(grades.size, dtype=np.float32)
+    bottom = np.zeros(n_slices, dtype=np.float32)
     for i in range(5):
         heights = votes[:, i]
         ax_stack.bar(
-            z,
+            x,
             heights,
             bottom=bottom,
             width=1.0,
@@ -161,7 +162,7 @@ def write_slice_profile_png(
         )
         bottom += heights
 
-    ax_conf.plot(z, conf_pct, color="#111111", linewidth=1.25, alpha=0.9, label="Confidence")
+    ax_conf.plot(x, conf_pct, color="#111111", linewidth=1.25, alpha=0.9, label="Confidence")
     ax_conf.axhline(float(prediction.automatic_confidence), color="#333333", linestyle="--", linewidth=1.0, alpha=0.6)
     ax_conf.set_ylabel("Confidence (%)", color="#111111")
     ax_conf.set_ylim(0.0, 100.0)
@@ -175,6 +176,18 @@ def write_slice_profile_png(
         f"MotionScore per-slice votes | automatic grade={prediction.automatic_grade} | confidence={prediction.automatic_confidence}%"
     )
     ax_stack.legend(loc="upper left", ncol=5, fontsize=7, frameon=False)
+
+    # Use an explicit x-domain [0, N] so slice 0 maps to the left edge and
+    # total slice count maps to the right edge with no autoscale padding.
+    ax_stack.set_xlim(0.0, float(n_slices))
+    ax_conf.set_xlim(0.0, float(n_slices))
+    ax_stack.margins(x=0.0)
+    ax_conf.margins(x=0.0)
+    if n_slices <= 1:
+        xticks = [0]
+    else:
+        xticks = sorted(set([0, n_slices // 4, n_slices // 2, (3 * n_slices) // 4, n_slices]))
+    ax_stack.set_xticks(xticks)
 
     output_path = Path(output_path)
     ensure_parent(output_path)
