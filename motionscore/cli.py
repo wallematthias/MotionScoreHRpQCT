@@ -958,7 +958,7 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "mps", "cuda"])
     train.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
     train.add_argument("--batch-size", type=int, default=24)
-    train.add_argument("--epochs-head", type=int, default=10)
+    train.add_argument("--epochs-head", type=int, default=20)
     train.add_argument("--epochs-finetune", type=int, default=50)
     train.add_argument("--lr-head", type=float, default=1e-3)
     train.add_argument("--lr-finetune", type=float, default=1e-4)

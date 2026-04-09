@@ -23,7 +23,7 @@ class TrainConfig:
     device: str = "auto"
     scaling: str = "native"
     batch_size: int = 24
-    epochs_head: int = 10
+    epochs_head: int = 20
     epochs_finetune: int = 50
     lr_head: float = 1e-3
     lr_finetune: float = 1e-4
