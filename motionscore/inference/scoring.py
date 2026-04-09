@@ -80,6 +80,7 @@ def predict_scan(
     stackheight: int = 168,
     on_incomplete_stack: str = "keep_last",
     slice_batch_size: int = 64,
+    slice_step: int = 1,
     retain_preprocessed: bool = False,
 ) -> PredictionResult:
     if volume_xyz.ndim != 3:
@@ -92,15 +93,23 @@ def predict_scan(
     if int(slice_batch_size) <= 0:
         raise ValueError("slice_batch_size must be > 0")
     batch_size = int(slice_batch_size)
+    if int(slice_step) <= 0:
+        raise ValueError("slice_step must be > 0")
+    step = int(slice_step)
+    if retain_preprocessed and step != 1:
+        raise ValueError("slice_step must be 1 when retain_preprocessed=True")
 
     all_infos: list[PreprocessInfo] = []
     retained_scan: list[np.ndarray] | None = [] if retain_preprocessed else None
     pending_batch: list[np.ndarray] = []
+    pending_indices: list[int] = []
+    predicted_indices: list[int] = []
     votes_chunks: list[np.ndarray] = []
     slice_grades_chunks: list[np.ndarray] = []
     slice_conf_chunks: list[np.ndarray] = []
 
-    for i in range(depth):
+    slice_indices = list(range(0, depth, step))
+    for idx_pos, i in enumerate(slice_indices):
         arr, info = preprocess_slice(filtered[:, :, i])
         if retain_preprocessed and retained_scan is not None:
             retained_scan.append(arr)
@@ -111,7 +120,8 @@ def predict_scan(
             all_infos = [info]
 
         pending_batch.append(arr)
-        if len(pending_batch) < batch_size and i < (depth - 1):
+        pending_indices.append(i)
+        if len(pending_batch) < batch_size and idx_pos < (len(slice_indices) - 1):
             continue
 
         batch = np.asarray(pending_batch, dtype=np.float32) / 255.0
@@ -120,25 +130,40 @@ def predict_scan(
         votes_chunks.append(chunk_votes)
         slice_grades_chunks.append(chunk_grades)
         slice_conf_chunks.append(chunk_conf)
+        predicted_indices.extend(pending_indices)
         pending_batch.clear()
+        pending_indices.clear()
 
     if not votes_chunks:
         raise RuntimeError("No slice predictions were generated")
 
-    votes = np.concatenate(votes_chunks, axis=0)
-    slice_grades = np.concatenate(slice_grades_chunks, axis=0)
-    slice_conf = np.concatenate(slice_conf_chunks, axis=0)
+    votes_sparse = np.concatenate(votes_chunks, axis=0)
+    slice_grades_sparse = np.concatenate(slice_grades_chunks, axis=0)
+    slice_conf_sparse = np.concatenate(slice_conf_chunks, axis=0)
 
-    automatic_grade = int(np.round(np.mean(slice_grades), 0))
-    mean_conf = float(np.round(np.mean(slice_conf), 2))
+    pred_idx = np.asarray(predicted_indices, dtype=np.int32)
+    votes = np.zeros((depth, votes_sparse.shape[1]), dtype=np.float32)
+    slice_grades = np.zeros(depth, dtype=np.int32)
+    slice_conf = np.full(depth, -1.0, dtype=np.float32)
+    votes[pred_idx] = votes_sparse
+    slice_grades[pred_idx] = slice_grades_sparse
+    slice_conf[pred_idx] = slice_conf_sparse
+
+    automatic_grade = int(np.round(np.mean(slice_grades_sparse), 0))
+    mean_conf = float(np.round(np.mean(slice_conf_sparse), 2))
     automatic_conf = int(np.round(mean_conf * 100, 0))
 
     ranges = compute_stack_ranges(depth, stackheight, on_incomplete_stack=on_incomplete_stack)
     stack_grades = []
     stack_conf = []
     for start, end in ranges:
-        stack_grades.append(float(np.round(np.mean(slice_grades[start:end]), 0)))
-        stack_conf.append(float(np.round(np.mean(slice_conf[start:end]), 2)))
+        in_stack = (pred_idx >= int(start)) & (pred_idx < int(end))
+        if not np.any(in_stack):
+            stack_grades.append(0.0)
+            stack_conf.append(-1.0)
+            continue
+        stack_grades.append(float(np.round(np.mean(slice_grades_sparse[in_stack]), 0)))
+        stack_conf.append(float(np.round(np.mean(slice_conf_sparse[in_stack]), 2)))
 
     if retain_preprocessed and retained_scan is not None:
         preprocessed_scan = np.asarray(retained_scan, dtype=np.float32)

@@ -8,6 +8,11 @@ from PIL import Image, ImageDraw
 from motionscore.inference.scoring import PredictionResult
 from motionscore.utils import ensure_parent
 
+PROFILE_PLOT_LEFT = 0.11
+PROFILE_PLOT_RIGHT = 0.89
+PROFILE_PLOT_BOTTOM = 0.20
+PROFILE_PLOT_TOP = 0.84
+
 
 def _normalize_to_uint8(image: np.ndarray) -> np.ndarray:
     arr = np.asarray(image, dtype=np.float32)
@@ -60,8 +65,17 @@ def write_prediction_preview_png(
 
         grade = prediction.slice_grades[z_safe] if z_safe < len(prediction.slice_grades) else prediction.automatic_grade
         conf = prediction.slice_confidences[z_safe] if z_safe < len(prediction.slice_confidences) else prediction.mean_confidence
-        conf_pct = int(round(float(conf) * 100.0)) if float(conf) <= 1.0 else int(round(float(conf)))
-        label = f"z={z_safe} g={grade} c={conf_pct}%"
+        try:
+            grade_txt = "-" if int(grade) <= 0 else str(int(grade))
+        except Exception:
+            grade_txt = "-"
+        conf_value = float(conf)
+        if conf_value < 0.0 or not np.isfinite(conf_value):
+            conf_txt = "-"
+        else:
+            conf_pct = int(round(conf_value * 100.0)) if conf_value <= 1.0 else int(round(conf_value))
+            conf_txt = f"{conf_pct}%"
+        label = f"z={z_safe} g={grade_txt} c={conf_txt}"
 
         draw.rectangle([(0, panel_size - 24), (panel_size, panel_size)], fill=(0, 0, 0))
         draw.text((6, panel_size - 20), label, fill=(255, 255, 255))
@@ -105,14 +119,20 @@ def write_slice_profile_png(
         raise ValueError("slice_confidences length must match slice_grades length")
 
     z = np.arange(grades.size, dtype=np.int32)
-    conf_pct = conf * 100.0 if float(np.nanmax(conf)) <= 1.0 else conf
+    valid_conf = np.isfinite(conf) & (conf >= 0.0)
+    conf_pct = conf.astype(np.float32, copy=True)
+    if np.any(valid_conf) and float(np.nanmax(conf[valid_conf])) <= 1.0:
+        conf_pct[valid_conf] = conf_pct[valid_conf] * 100.0
+    conf_pct[~valid_conf] = np.nan
 
     votes = np.asarray(prediction.votes, dtype=np.float32)
     if votes.ndim != 2 or votes.shape[0] != grades.size or votes.shape[1] != 5:
         # Fallback: synthesize one-hot vote bars from slice grades.
         votes = np.zeros((grades.size, 5), dtype=np.float32)
-        safe_idx = np.clip(grades - 1, 0, 4)
-        votes[np.arange(grades.size), safe_idx] = 1.0
+        valid_grade = (grades >= 1) & (grades <= 5)
+        if np.any(valid_grade):
+            safe_idx = np.clip(grades[valid_grade] - 1, 0, 4)
+            votes[np.where(valid_grade)[0], safe_idx] = 1.0
 
     row_sums = np.sum(votes, axis=1, keepdims=True)
     row_sums = np.where(row_sums <= 0, 1.0, row_sums)
@@ -123,7 +143,7 @@ def write_slice_profile_png(
     grade_colors = ["#125FAF", "#4B97E0", "#F2C94C", "#E56A5D", "#B73A31"]
     grade_labels = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5"]
 
-    fig, ax_stack = plt.subplots(figsize=(10, 3.4), dpi=150)
+    fig, ax_stack = plt.subplots(figsize=(8.2, 2.6), dpi=130)
     ax_conf = ax_stack.twinx()
 
     bottom = np.zeros(grades.size, dtype=np.float32)
@@ -158,7 +178,12 @@ def write_slice_profile_png(
 
     output_path = Path(output_path)
     ensure_parent(output_path)
-    fig.tight_layout()
+    fig.subplots_adjust(
+        left=PROFILE_PLOT_LEFT,
+        right=PROFILE_PLOT_RIGHT,
+        bottom=PROFILE_PLOT_BOTTOM,
+        top=PROFILE_PLOT_TOP,
+    )
     fig.savefig(output_path, format="png")
     plt.close(fig)
     return output_path

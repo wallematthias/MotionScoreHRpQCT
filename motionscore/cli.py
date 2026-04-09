@@ -239,6 +239,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
             stackheight=int(args.stackheight),
             on_incomplete_stack=args.on_incomplete_stack,
             slice_batch_size=int(args.slice_batch_size),
+            slice_step=int(args.slice_step),
             retain_preprocessed=False,
         )
 
@@ -533,6 +534,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=64,
         help="How many preprocessed slices to run per inference batch (smaller uses less RAM).",
+    )
+    predict.add_argument(
+        "--slice-step",
+        type=int,
+        default=1,
+        help="Process every n-th slice only (1=full scan, 2=every second slice, etc.).",
     )
     predict.add_argument("--on-incomplete-stack", type=str, default="keep_last", choices=["keep_last", "drop_last", "error"])
     predict.add_argument("--confidence-threshold", type=int, default=75)

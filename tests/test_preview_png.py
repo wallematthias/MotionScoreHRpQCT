@@ -60,3 +60,32 @@ def test_write_slice_profile_png(tmp_path: Path) -> None:
         assert img.format == "PNG"
         assert img.size[0] > 512
         assert img.size[1] > 150
+
+
+def test_write_slice_profile_png_with_sparse_predictions(tmp_path: Path) -> None:
+    prediction = PredictionResult(
+        automatic_grade=2,
+        automatic_confidence=76,
+        mean_confidence=0.76,
+        slice_grades=[2, 0, 2, 0, 2],
+        slice_confidences=[0.8, -1.0, 0.75, -1.0, 0.7],
+        stack_grades=[2.0],
+        stack_confidences=[0.76],
+        stack_ranges=[(0, 5)],
+        preprocessed_scan=None,
+        preprocess_infos=[],
+        votes=np.array(
+            [
+                [0, 1, 0, 0, 0],
+                [0, 0, 0, 0, 0],
+                [0, 1, 0, 0, 0],
+                [0, 0, 0, 0, 0],
+                [0, 1, 0, 0, 0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+    output = tmp_path / "slice_profile_sparse.png"
+    written = write_slice_profile_png(prediction=prediction, output_path=output)
+    assert written.exists()

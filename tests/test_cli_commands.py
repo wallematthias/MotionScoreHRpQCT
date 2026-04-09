@@ -45,6 +45,7 @@ def _predict_args(root: Path) -> argparse.Namespace:
         scaling="native",
         stackheight=4,
         slice_batch_size=4,
+        slice_step=1,
         on_incomplete_stack="keep_last",
         confidence_threshold=75,
         training_mode=False,

@@ -31,6 +31,14 @@ def test_predict_preview_flags() -> None:
     assert args.preview_panels == 5
     assert args.save_preview_png is False
     assert args.slice_batch_size == 64
+    assert args.slice_step == 1
+
+
+def test_predict_slice_step_flag() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["predict", "/tmp/data", "--slice-step", "3"])
+    assert args.command == "predict"
+    assert args.slice_step == 3
 
 
 def test_predict_scan_id_filter_flags() -> None:
