@@ -36,6 +36,18 @@ def test_discover_plain_aim_filename_fallback(tmp_path: Path) -> None:
     assert sessions[0].output_rel_dir == Path("scan01")
 
 
+def test_discover_single_aim_path_input(tmp_path: Path) -> None:
+    aim_path = tmp_path / "randomfilename.AIM"
+    _touch(aim_path)
+
+    sessions = discover_raw_sessions(aim_path, DiscoveryConfig())
+    assert len(sessions) == 1
+    assert sessions[0].subject_id == "randomfilename"
+    assert sessions[0].site == "tibia"
+    assert sessions[0].session_id == "T1"
+    assert sessions[0].raw_image_path == aim_path
+
+
 def test_discover_nested_bids_layout(tmp_path: Path) -> None:
     image = tmp_path / "sub-001" / "ses-T2" / "anat" / "SUB001_DT_T2.AIM"
     image.parent.mkdir(parents=True, exist_ok=True)

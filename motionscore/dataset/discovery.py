@@ -257,13 +257,18 @@ def discover_raw_sessions(
     root = Path(root)
     if not root.exists():
         raise FileNotFoundError(f"Discovery root does not exist: {root}")
+    if root.is_file() and not _is_aim_file(root):
+        raise ValueError(f"Discovery root must be a directory or AIM file: {root}")
+
+    search_root = root.parent if root.is_file() else root
+    candidate_paths = [root] if root.is_file() else root.rglob("*")
 
     grouped: dict[tuple[str, str, str, int | None], list[tuple[Path, str]]] = defaultdict(list)
 
-    for path in root.rglob("*"):
+    for path in candidate_paths:
         if not _is_aim_file(path):
             continue
-        if _is_pipeline_managed_copy(path, root):
+        if _is_pipeline_managed_copy(path, search_root):
             continue
 
         try:
@@ -314,7 +319,7 @@ def discover_raw_sessions(
             session_id=session,
             raw_image_path=image_candidates[0],
             stack_index=stack_index,
-            output_rel_dir=_compute_output_rel_dir(root, image_candidates[0]),
+            output_rel_dir=_compute_output_rel_dir(search_root, image_candidates[0]),
         )
         raw_session.validate()
         sessions.append(raw_session)
