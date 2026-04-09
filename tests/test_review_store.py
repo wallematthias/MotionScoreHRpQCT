@@ -6,9 +6,10 @@ from motionscore.review.store import (
     compute_grade_pair_agreement,
     compute_review_agreement,
     export_reviews,
+    import_final_grades,
     initialize_or_update_review,
 )
-from motionscore.utils import read_tsv
+from motionscore.utils import read_tsv, write_tsv
 
 
 def test_review_init_and_manual_override(tmp_path: Path) -> None:
@@ -253,3 +254,76 @@ def test_manual_mode_review_flow(tmp_path: Path) -> None:
     )
     assert updated["review_status"] == "manual_confirmed"
     assert updated["final_grade"] == "3"
+
+
+def test_import_final_grades_fills_only_missing_rows(tmp_path: Path) -> None:
+    review_tsv = tmp_path / "review.tsv"
+    review_json = tmp_path / "review.json"
+    review_audit = tmp_path / "review_audit.tsv"
+
+    initialize_or_update_review(
+        review_tsv_path=review_tsv,
+        review_json_path=review_json,
+        review_audit_path=review_audit,
+        prediction_rows=[
+            {
+                "scan_id": "scan-1",
+                "subject_id": "001",
+                "automatic_grade": "2",
+                "automatic_confidence": "60",
+            },
+            {
+                "scan_id": "scan-2",
+                "subject_id": "002",
+                "automatic_grade": "3",
+                "automatic_confidence": "60",
+            },
+        ],
+        confidence_threshold=75,
+    )
+    apply_manual_review(
+        review_tsv_path=review_tsv,
+        review_audit_path=review_audit,
+        review_json_path=review_json,
+        scan_id="scan-2",
+        manual_grade=5,
+        reviewer="opA",
+    )
+
+    import_path = tmp_path / "import.tsv"
+    write_tsv(
+        import_path,
+        [
+            {"scan_id": "scan-1", "final_grade": "4", "reviewer": "ext"},
+            {"scan_id": "scan-2", "final_grade": "1", "reviewer": "ext"},
+            {"scan_id": "missing", "final_grade": "2", "reviewer": "ext"},
+        ],
+        ["scan_id", "final_grade", "reviewer"],
+    )
+
+    stats = import_final_grades(
+        index_rows=[
+            {
+                "scan_id": "scan-1",
+                "review_tsv": review_tsv.name,
+                "review_audit": review_audit.name,
+                "review_json": review_json.name,
+            },
+            {
+                "scan_id": "scan-2",
+                "review_tsv": review_tsv.name,
+                "review_audit": review_audit.name,
+                "review_json": review_json.name,
+            },
+        ],
+        derivatives_root=tmp_path,
+        import_path=import_path,
+        reviewer="import",
+    )
+
+    assert stats == {"imported": 1, "skipped_existing": 1, "missing_scan": 1}
+    rows = {row["scan_id"]: row for row in read_tsv(review_tsv)}
+    assert rows["scan-1"]["manual_grade"] == "4"
+    assert rows["scan-1"]["final_grade"] == "4"
+    assert rows["scan-1"]["reviewer"] == "ext"
+    assert rows["scan-2"]["manual_grade"] == "5"

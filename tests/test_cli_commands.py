@@ -13,12 +13,20 @@ from motionscore.utils import read_tsv
 
 
 class _FakeEnsemble:
-    def __init__(self, model_dir=None, device="auto"):
+    def __init__(self, model_dir=None, model_root=None, model_id=None, device="auto"):
         self.model_dir = model_dir
+        self.model_root = model_root
+        self.model_id = model_id or "base-v1"
         self.device = device
 
     def model_version(self):
         return "DNN_0.pt+DNN_1.pt"
+
+    def model_identity(self):
+        return f"{self.model_id}:DNN_0.pt+DNN_1.pt"
+
+    def resolved_model_id(self):
+        return self.model_id
 
     def model_device(self):
         return self.device
@@ -41,6 +49,8 @@ def _predict_args(root: Path) -> argparse.Namespace:
         input_root=root,
         output_root=None,
         model_dir=None,
+        model_root=None,
+        model_id="base-v1",
         device="cpu",
         scaling="native",
         stackheight=4,
@@ -213,6 +223,117 @@ def test_cmd_predict_manual_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert pred_rows[0]["automatic_confidence"] == ""
 
 
+def test_cmd_predict_manual_only_preserves_existing_ai_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    aim_path = root / "randomfilename.AIM"
+    aim_path.write_bytes(b"aim")
+    session = RawSession("randomfilename", "tibia", "T1", aim_path)
+
+    monkeypatch.setattr(cli, "discover_raw_sessions", lambda **_kwargs: [session])
+    monkeypatch.setattr(cli, "read_aim", lambda _p, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 4), dtype=np.float32)))
+    monkeypatch.setattr(cli, "predict_scan", lambda *_args, **_kwargs: _FakePrediction())
+    monkeypatch.setattr(
+        __import__("motionscore.inference.model", fromlist=["ModelEnsemble"]),
+        "ModelEnsemble",
+        _FakeEnsemble,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_prediction_preview_png",
+        lambda volume_xyz, prediction, output_path, max_panels=3: output_path,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_slice_profile_png",
+        lambda prediction, output_path: output_path,
+    )
+
+    args = _predict_args(root)
+    args.save_preview_png = False
+    assert cli._cmd_predict(args) == 0
+
+    # Manual-only run should keep existing AI fields in predictions.tsv if present.
+    monkeypatch.setattr(
+        __import__("motionscore.inference.model", fromlist=["ModelEnsemble"]),
+        "ModelEnsemble",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("ModelEnsemble should not be used in manual-only mode")),
+    )
+    args2 = _predict_args(root)
+    args2.manual_only = True
+    args2.save_preview_png = False
+    assert cli._cmd_predict(args2) == 0
+
+    derivatives = root / "derivatives" / "MotionScore"
+    index_rows = read_tsv(derivatives / "index.tsv")
+    assert len(index_rows) == 1
+    assert index_rows[0]["manual_mode"] == "1"
+    assert index_rows[0]["automatic_grade"] == "3"
+
+    pred_tsv = derivatives / index_rows[0]["predictions_tsv"]
+    pred_rows = read_tsv(pred_tsv)
+    assert len(pred_rows) == 1
+    assert pred_rows[0]["manual_mode"] == "1"
+    assert pred_rows[0]["automatic_grade"] == "3"
+    assert pred_rows[0]["slice_grades"] != ""
+
+
+def test_cmd_predict_stores_outputs_side_by_side_per_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    aim_path = root / "SUB1_DT_T1.AIM"
+    aim_path.write_bytes(b"aim")
+    session = RawSession("SUB1", "tibia", "T1", aim_path)
+
+    monkeypatch.setattr(cli, "discover_raw_sessions", lambda **_kwargs: [session])
+    monkeypatch.setattr(cli, "read_aim", lambda _p, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 4), dtype=np.float32)))
+    monkeypatch.setattr(cli, "predict_scan", lambda *_args, **_kwargs: _FakePrediction())
+    monkeypatch.setattr(
+        __import__("motionscore.inference.model", fromlist=["ModelEnsemble"]),
+        "ModelEnsemble",
+        _FakeEnsemble,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_prediction_preview_png",
+        lambda volume_xyz, prediction, output_path, max_panels=3: output_path,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_slice_profile_png",
+        lambda prediction, output_path: output_path,
+    )
+
+    args_a = _predict_args(root)
+    args_a.model_id = "base-v1"
+    args_a.save_preview_png = False
+    assert cli._cmd_predict(args_a) == 0
+
+    args_b = _predict_args(root)
+    args_b.model_id = "knee-v1"
+    args_b.save_preview_png = False
+    assert cli._cmd_predict(args_b) == 0
+
+    derivatives = root / "derivatives" / "MotionScore"
+    base_pred = derivatives / "sub-SUB1" / "site-tibia" / "ses-T1" / "predictions" / "models" / "base-v1" / "predictions.tsv"
+    knee_pred = derivatives / "sub-SUB1" / "site-tibia" / "ses-T1" / "predictions" / "models" / "knee-v1" / "predictions.tsv"
+    assert base_pred.exists()
+    assert knee_pred.exists()
+
+    base_rows = read_tsv(base_pred)
+    knee_rows = read_tsv(knee_pred)
+    assert base_rows[0]["model_id"] == "base-v1"
+    assert knee_rows[0]["model_id"] == "knee-v1"
+
+    index_rows = read_tsv(derivatives / "index.tsv")
+    assert len(index_rows) == 1
+    assert "predictions/models/knee-v1/predictions.tsv" in index_rows[0]["predictions_tsv"]
+
+
 def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     derivatives = tmp_path / "derivatives" / "MotionScore"
     derivatives.mkdir(parents=True)
@@ -236,9 +357,6 @@ def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp
             [
                 "x",
                 "SUB1",
-                "tibia",
-                "T1",
-                "",
                 str((tmp_path / "raw.AIM").resolve()),
                 "sub-SUB1/site-tibia/ses-T1/predictions/predictions.tsv",
                 "sub-SUB1/site-tibia/ses-T1/review/review.tsv",
@@ -249,6 +367,8 @@ def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp
                 str(existing_map.relative_to(derivatives)),
                 "3",
                 "82",
+                "0",
+                "base-v1",
                 "DNN_0.pt",
                 "2026-01-01T00:00:00+00:00",
             ]
@@ -262,6 +382,8 @@ def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp
         derivatives_root=derivatives,
         scan_id="x",
         model_dir=None,
+        model_root=None,
+        model_id="",
         device="cpu",
         scaling="native",
         stackheight=4,
@@ -292,6 +414,8 @@ def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp
         derivatives_root=derivatives,
         scan_id="x",
         model_dir=None,
+        model_root=None,
+        model_id="",
         device="cpu",
         scaling="native",
         stackheight=4,

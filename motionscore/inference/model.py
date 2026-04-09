@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from motionscore.inference.torch_model import load_torch_model
+from motionscore.model_registry import resolve_model_dir
 
 
 @dataclass(slots=True)
@@ -20,6 +21,8 @@ class ModelEnsemble:
     def __init__(
         self,
         model_dir: str | Path | None = None,
+        model_root: str | Path | None = None,
+        model_id: str | None = None,
         backend: str = "torch",
         device: str = "auto",
     ):
@@ -31,52 +34,34 @@ class ModelEnsemble:
             raise ValueError("device must be one of: auto, cpu, mps, cuda")
 
         self.model_dir = Path(model_dir).resolve() if model_dir else None
+        self.model_root = Path(model_root).resolve() if model_root else None
+        self.model_id = str(model_id).strip() if model_id is not None else "base-v1"
         self.backend = "torch"
         self.requested_device = device_norm
         self.runtime_device = "cpu"
+        self.resolved_model_dir: Path | None = None
+        self.resolved_profile: dict[str, Any] | None = None
         self.loaded: list[LoadedModel] = []
 
-    @staticmethod
-    def _candidate_model_dirs() -> list[Path]:
-        package_root = Path(__file__).resolve().parents[1]
-        repo_root = Path(__file__).resolve().parents[2]
-        return [
-            package_root / "models",
-            repo_root / "models",
-            Path.cwd() / "models",
-        ]
-
-    def _resolve_candidate_dirs(self) -> list[Path]:
-        if self.model_dir is not None:
-            return [self.model_dir.resolve()]
-
-        dirs: list[Path] = []
-        dirs.extend(self._candidate_model_dirs())
-
-        seen: set[Path] = set()
-        unique_dirs: list[Path] = []
-        for d in dirs:
-            d = d.resolve()
-            if d in seen:
-                continue
-            seen.add(d)
-            unique_dirs.append(d)
-        return unique_dirs
-
     def resolve_model_paths(self) -> list[Path]:
-        unique_dirs = self._resolve_candidate_dirs()
-        for d in unique_dirs:
-            if not d.exists():
-                continue
-            dnn = sorted(d.glob("DNN_*.pt"))
-            if dnn:
-                return dnn
-            any_models = sorted(d.glob("*.pt"))
-            if any_models:
-                return any_models
+        if self.model_dir is not None:
+            candidate_dir = self.model_dir.resolve()
+            self.resolved_profile = None
+        else:
+            root = self.model_root.resolve() if self.model_root is not None else (Path.cwd() / "models").resolve()
+            candidate_dir, profile = resolve_model_dir(root, model_id=self.model_id)
+            self.resolved_profile = profile
 
-        searched = ", ".join(str(d) for d in unique_dirs)
-        raise FileNotFoundError(f"No .pt model files found. Searched: {searched}")
+        self.resolved_model_dir = candidate_dir
+        dnn = sorted(candidate_dir.glob("DNN_*.pt"))
+        if dnn:
+            return dnn
+
+        any_models = sorted(candidate_dir.glob("*.pt"))
+        if any_models:
+            return any_models
+
+        raise FileNotFoundError(f"No .pt model files found in: {candidate_dir}")
 
     def _resolve_torch_device(self) -> str:
         if self.requested_device == "cpu":
@@ -127,6 +112,25 @@ class ModelEnsemble:
         self.load()
         names = [m.path.name for m in self.loaded]
         return "+".join(names)
+
+    def model_identity(self) -> str:
+        self.load()
+        if self.resolved_profile:
+            model_id = str(self.resolved_profile.get("model_id", "")).strip()
+            version = str(self.resolved_profile.get("version", "")).strip()
+            model_prefix = f"{model_id}@{version}" if version else model_id
+            return f"{model_prefix}:{self.model_version()}" if model_prefix else self.model_version()
+        if self.model_dir is not None:
+            return f"{self.model_dir.name}:{self.model_version()}"
+        return f"{self.model_id}:{self.model_version()}"
+
+    def resolved_model_id(self) -> str:
+        self.load()
+        if self.resolved_profile:
+            return str(self.resolved_profile.get("model_id", "")).strip() or self.model_id
+        if self.model_dir is not None:
+            return self.model_dir.name
+        return self.model_id
 
     def model_device(self) -> str:
         self.load()

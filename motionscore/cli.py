@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -23,13 +24,22 @@ from motionscore.dataset.layout import (
 from motionscore.dataset.models import RawSession
 from motionscore.inference.scoring import predict_scan
 from motionscore.io.aim import read_aim
+from motionscore.model_registry import (
+    get_registry_path,
+    list_model_profiles,
+    register_model_profile,
+    resolve_model_dir,
+)
 from motionscore.review.store import (
     apply_manual_review,
     clear_manual_reviews,
     export_reviews,
+    import_final_grades,
     initialize_or_update_review,
 )
 from motionscore.review.preview import write_prediction_preview_png, write_slice_profile_png
+from motionscore.training.prepare import build_training_manifest
+from motionscore.training.trainer import TrainConfig, run_transfer_learning
 from motionscore.utils import (
     make_scan_id,
     read_tsv,
@@ -53,6 +63,7 @@ INDEX_FIELDS = [
     "automatic_grade",
     "automatic_confidence",
     "manual_mode",
+    "model_id",
     "model_version",
     "predicted_at",
 ]
@@ -66,6 +77,7 @@ PREDICTION_FIELDS = [
     "automatic_grade",
     "automatic_confidence",
     "manual_mode",
+    "model_id",
     "mean_confidence",
     "stack_ranges",
     "stack_grades",
@@ -151,6 +163,69 @@ def _scan_id_for_session(session: RawSession) -> str:
     return make_scan_id(session.subject_id, session.site, session.session_id, session.raw_image_path)
 
 
+def _default_model_root() -> Path:
+    return (Path.home() / ".motionscore" / "MotionScore" / "models").resolve()
+
+
+def _resolve_model_root(model_root: Path | None) -> Path:
+    return model_root.resolve() if model_root is not None else _default_model_root()
+
+
+def _sanitize_model_component(model_id: str | None) -> str:
+    raw = str(model_id or "").strip()
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-.")
+    return safe or "default"
+
+
+def _requested_model_storage_id(args: argparse.Namespace) -> str:
+    model_dir = getattr(args, "model_dir", None)
+    if model_dir is not None:
+        try:
+            return Path(model_dir).resolve().name
+        except Exception:
+            return Path(model_dir).name
+    model_id = str(getattr(args, "model_id", "") or "").strip()
+    return model_id or "base-v1"
+
+
+def _session_output_paths(
+    *,
+    derivatives_root: Path,
+    session: RawSession,
+    model_id: str,
+    scan_id: str,
+) -> dict[str, Path]:
+    pred_dir = get_predictions_dir(derivatives_root, session)
+    review_dir = get_review_dir(derivatives_root, session)
+    preview_dir = get_preview_dir(derivatives_root, session)
+    model_component = _sanitize_model_component(model_id)
+    model_pred_dir = pred_dir / "models" / model_component
+    model_review_dir = review_dir / "models" / model_component
+    model_preview_dir = preview_dir / "models" / model_component
+    return {
+        "predictions_tsv": model_pred_dir / "predictions.tsv",
+        "review_tsv": model_review_dir / "review.tsv",
+        "review_json": model_review_dir / "review.json",
+        "review_audit": model_review_dir / "review_audit.tsv",
+        "preview_png": model_preview_dir / f"{scan_id}_preview.png",
+        "slice_profile_png": model_preview_dir / f"{scan_id}_slice_profile.png",
+    }
+
+
+def _legacy_session_output_paths(*, derivatives_root: Path, session: RawSession, scan_id: str) -> dict[str, Path]:
+    pred_dir = get_predictions_dir(derivatives_root, session)
+    review_dir = get_review_dir(derivatives_root, session)
+    preview_dir = get_preview_dir(derivatives_root, session)
+    return {
+        "predictions_tsv": pred_dir / "predictions.tsv",
+        "review_tsv": review_dir / "review.tsv",
+        "review_json": review_dir / "review.json",
+        "review_audit": review_dir / "review_audit.tsv",
+        "preview_png": preview_dir / f"{scan_id}_preview.png",
+        "slice_profile_png": preview_dir / f"{scan_id}_slice_profile.png",
+    }
+
+
 def _cmd_discover(args: argparse.Namespace) -> int:
     cfg = AppConfig()
     sessions = discover_raw_sessions(
@@ -224,18 +299,64 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     if manual_only and bool(args.save_preview_png):
         print("[predict] manual-only mode: preview PNG export disabled")
 
+    model_root = _resolve_model_root(args.model_root)
+    model_id = str(getattr(args, "model_id", "base-v1") or "base-v1").strip()
+    requested_storage_model_id = _requested_model_storage_id(args)
     ensemble = None
     model_version = "manual-only" if manual_only else ""
+    resolved_model_id = "manual-only" if manual_only else model_id
     if manual_only:
         print("[predict] manual-only mode: skipping CNN inference")
     else:
-        ensemble = ModelEnsemble(args.model_dir, device=args.device)
-        model_version = ensemble.model_version()
+        ensemble = ModelEnsemble(
+            model_dir=args.model_dir,
+            model_root=model_root,
+            model_id=model_id,
+            device=args.device,
+        )
+        model_version = ensemble.model_identity()
+        resolved_model_id = ensemble.resolved_model_id()
         print(f"[predict] using torch device={ensemble.model_device()}")
 
     index_updates: list[dict[str, str]] = []
     for session in sessions:
         scan_id = _scan_id_for_session(session)
+        storage_model_id = requested_storage_model_id if manual_only else resolved_model_id
+        scoped_paths = _session_output_paths(
+            derivatives_root=derivatives_root,
+            session=session,
+            model_id=storage_model_id,
+            scan_id=scan_id,
+        )
+        legacy_paths = _legacy_session_output_paths(
+            derivatives_root=derivatives_root,
+            session=session,
+            scan_id=scan_id,
+        )
+
+        predictions_tsv = scoped_paths["predictions_tsv"]
+        review_tsv = scoped_paths["review_tsv"]
+        review_json = scoped_paths["review_json"]
+        review_audit = scoped_paths["review_audit"]
+
+        existing_prediction_row = {}
+        if manual_only:
+            lookup_paths = [predictions_tsv]
+            if legacy_paths["predictions_tsv"] != predictions_tsv:
+                lookup_paths.append(legacy_paths["predictions_tsv"])
+            for candidate_path in lookup_paths:
+                if not candidate_path.exists():
+                    continue
+                existing_rows = read_tsv(candidate_path)
+                if not existing_rows:
+                    continue
+                candidate_row = dict(existing_rows[0])
+                candidate_model_id = str(candidate_row.get("model_id", "")).strip()
+                if candidate_path == legacy_paths["predictions_tsv"] and candidate_model_id not in {"", storage_model_id}:
+                    continue
+                existing_prediction_row = candidate_row
+                break
+
         if manual_only:
             prediction = None
             aim_volume = None
@@ -251,50 +372,56 @@ def _cmd_predict(args: argparse.Namespace) -> int:
                 retain_preprocessed=False,
             )
 
-        predicted_at = utc_now_iso()
-
-        pred_dir = get_predictions_dir(derivatives_root, session)
-        review_dir = get_review_dir(derivatives_root, session)
-
-        predictions_tsv = pred_dir / "predictions.tsv"
-        review_tsv = review_dir / "review.tsv"
-        review_json = review_dir / "review.json"
-        review_audit = review_dir / "review_audit.tsv"
+        predicted_at = (
+            str(existing_prediction_row.get("predicted_at", "")).strip()
+            if manual_only and existing_prediction_row and str(existing_prediction_row.get("automatic_grade", "")).strip()
+            else utc_now_iso()
+        )
+        preserved_model_id = str(existing_prediction_row.get("model_id", "")).strip()
+        preserved_model_version = str(existing_prediction_row.get("model_version", "")).strip()
+        preserved_auto_grade = str(existing_prediction_row.get("automatic_grade", "")).strip()
+        preserved_auto_conf = str(existing_prediction_row.get("automatic_confidence", "")).strip()
+        preserved_preview_path = str(existing_prediction_row.get("preview_png_path", "")).strip()
+        preserved_profile_path = str(existing_prediction_row.get("slice_profile_png_path", "")).strip()
+        preserved_mean_conf = str(existing_prediction_row.get("mean_confidence", "")).strip()
+        preserved_stack_ranges = str(existing_prediction_row.get("stack_ranges", "")).strip()
+        preserved_stack_grades = str(existing_prediction_row.get("stack_grades", "")).strip()
+        preserved_stack_confidences = str(existing_prediction_row.get("stack_confidences", "")).strip()
+        preserved_slice_grades = str(existing_prediction_row.get("slice_grades", "")).strip()
+        preserved_slice_confidences = str(existing_prediction_row.get("slice_confidences", "")).strip()
 
         prediction_row = {
             "scan_id": scan_id,
             "subject_id": session.subject_id,
             "raw_image_path": str(session.raw_image_path.resolve()),
-            "preview_png_path": "",
-            "slice_profile_png_path": "",
-            "automatic_grade": "" if manual_only else str(prediction.automatic_grade),
-            "automatic_confidence": "" if manual_only else str(prediction.automatic_confidence),
+            "preview_png_path": preserved_preview_path if manual_only else "",
+            "slice_profile_png_path": preserved_profile_path if manual_only else "",
+            "automatic_grade": preserved_auto_grade if manual_only else str(prediction.automatic_grade),
+            "automatic_confidence": preserved_auto_conf if manual_only else str(prediction.automatic_confidence),
             "manual_mode": "1" if manual_only else "0",
-            "mean_confidence": "" if manual_only else str(prediction.mean_confidence),
-            "stack_ranges": "" if manual_only else json.dumps(prediction.stack_ranges),
-            "stack_grades": "" if manual_only else json.dumps(prediction.stack_grades),
-            "stack_confidences": "" if manual_only else json.dumps(prediction.stack_confidences),
-            "slice_grades": "" if manual_only else json.dumps(prediction.slice_grades),
-            "slice_confidences": "" if manual_only else json.dumps(prediction.slice_confidences),
-            "model_version": model_version,
+            "model_id": preserved_model_id if (manual_only and preserved_model_id) else resolved_model_id,
+            "mean_confidence": preserved_mean_conf if manual_only else str(prediction.mean_confidence),
+            "stack_ranges": preserved_stack_ranges if manual_only else json.dumps(prediction.stack_ranges),
+            "stack_grades": preserved_stack_grades if manual_only else json.dumps(prediction.stack_grades),
+            "stack_confidences": preserved_stack_confidences if manual_only else json.dumps(prediction.stack_confidences),
+            "slice_grades": preserved_slice_grades if manual_only else json.dumps(prediction.slice_grades),
+            "slice_confidences": preserved_slice_confidences if manual_only else json.dumps(prediction.slice_confidences),
+            "model_version": preserved_model_version if (manual_only and preserved_model_version) else model_version,
             "predicted_at": predicted_at,
         }
 
         if bool(args.save_preview_png) and not manual_only and aim_volume is not None and prediction is not None:
-            preview_dir = get_preview_dir(derivatives_root, session)
-            preview_path = preview_dir / f"{scan_id}_preview.png"
-            profile_path = preview_dir / f"{scan_id}_slice_profile.png"
             written_preview = write_prediction_preview_png(
                 volume_xyz=aim_volume.data,
                 prediction=prediction,
-                output_path=preview_path,
+                output_path=scoped_paths["preview_png"],
                 max_panels=preview_panels,
             )
             prediction_row["preview_png_path"] = to_relpath(written_preview, derivatives_root)
             try:
                 written_profile = write_slice_profile_png(
                     prediction=prediction,
-                    output_path=profile_path,
+                    output_path=scoped_paths["slice_profile_png"],
                 )
                 prediction_row["slice_profile_png_path"] = to_relpath(written_profile, derivatives_root)
             except RuntimeError as exc:
@@ -330,13 +457,17 @@ def _cmd_predict(args: argparse.Namespace) -> int:
                 "automatic_grade": prediction_row["automatic_grade"],
                 "automatic_confidence": prediction_row["automatic_confidence"],
                 "manual_mode": prediction_row["manual_mode"],
+                "model_id": resolved_model_id,
                 "model_version": model_version,
                 "predicted_at": predicted_at,
             }
         )
 
         if manual_only:
-            print(f"[predict] {scan_id} manual-only initialized")
+            if preserved_auto_grade:
+                print(f"[predict] {scan_id} manual-only initialized (kept existing AI outputs)")
+            else:
+                print(f"[predict] {scan_id} manual-only initialized")
         else:
             print(
                 f"[predict] {scan_id} grade={prediction.automatic_grade} conf={prediction.automatic_confidence}%"
@@ -457,6 +588,146 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_import_final_grades(args: argparse.Namespace) -> int:
+    derivatives_root = _normalize_derivatives_root(Path(args.derivatives_root).resolve())
+    index_rows = _read_index(derivatives_root)
+    if not index_rows:
+        raise FileNotFoundError(f"No index.tsv found in {derivatives_root}")
+
+    stats = import_final_grades(
+        index_rows=index_rows,
+        derivatives_root=derivatives_root,
+        import_path=Path(args.input).resolve(),
+        reviewer=str(args.reviewer or "import").strip() or "import",
+    )
+    print(
+        "[import-final-grades] "
+        f"imported={stats['imported']} skipped_existing={stats['skipped_existing']} missing_scan={stats['missing_scan']}"
+    )
+    return 0
+
+
+def _cmd_train_prepare(args: argparse.Namespace) -> int:
+    derivatives_root = _normalize_derivatives_root(Path(args.derivatives_root).resolve())
+    output_path = Path(args.output).resolve() if args.output else (derivatives_root / "training" / "train_manifest.tsv")
+
+    stats = build_training_manifest(
+        derivatives_root=derivatives_root,
+        output_path=output_path,
+        min_auto_confidence=float(args.min_auto_confidence),
+        slice_step=int(args.slice_step),
+        slice_count=int(args.slice_count),
+        include_auto_without_manual=bool(args.include_auto_without_manual),
+        seed=int(args.seed),
+        train_ratio=float(args.train_ratio),
+        val_ratio=float(args.val_ratio),
+        test_ratio=float(args.test_ratio),
+        scaling=args.scaling,
+    )
+    print(
+        "[train-prepare] "
+        f"rows={stats['rows_written']} manual={stats['rows_manual']} auto={stats['rows_auto']} "
+        f"split(train/val/test)={stats['split_train']}/{stats['split_val']}/{stats['split_test']} "
+        f"cache(scans/slices)={stats.get('cache_scans', 0)}/{stats.get('cache_slices', 0)}"
+    )
+    print(f"[train-prepare] wrote manifest: {output_path}")
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    manifest_path = Path(args.manifest).resolve()
+    output_model_dir = Path(args.output_model_dir).resolve()
+
+    if args.init_model_dir:
+        init_model_dir = Path(args.init_model_dir).resolve()
+        init_model_id = Path(init_model_dir).name
+    else:
+        model_root = _resolve_model_root(args.model_root)
+        model_id = str(args.init_model_id or "base-v1").strip()
+        init_model_dir, profile = resolve_model_dir(model_root=model_root, model_id=model_id)
+        init_model_id = str(profile.get("model_id", model_id)).strip()
+
+    cfg = TrainConfig(
+        manifest_path=manifest_path,
+        init_model_dir=init_model_dir,
+        output_model_dir=output_model_dir,
+        device=args.device,
+        scaling=args.scaling,
+        batch_size=int(args.batch_size),
+        epochs_head=int(args.epochs_head),
+        epochs_finetune=int(args.epochs_finetune),
+        lr_head=float(args.lr_head),
+        lr_finetune=float(args.lr_finetune),
+        early_stopping_patience=int(args.early_stopping_patience),
+        early_stopping_min_delta=float(args.early_stopping_min_delta),
+        aug_hflip=bool(args.aug_hflip),
+        aug_vflip=bool(args.aug_vflip),
+        aug_rotate=bool(args.aug_rotate),
+        aug_crop=bool(args.aug_crop),
+        max_cache_scans=int(args.max_cache_scans),
+        num_workers=int(args.num_workers),
+        seed=int(args.seed),
+    )
+
+    summary = run_transfer_learning(cfg)
+    print(
+        "[train] "
+        f"trained {len(summary.get('models', []))} model(s) from {init_model_id} "
+        f"on {summary.get('n_rows', 0)} slices"
+    )
+    print(f"[train] output model dir: {output_model_dir}")
+    print(f"[train] metrics: {output_model_dir / 'training_metrics.json'}")
+    return 0
+
+
+def _cmd_model_register(args: argparse.Namespace) -> int:
+    model_root = _resolve_model_root(args.model_root)
+    model_dir = Path(args.model_dir).resolve()
+    registry_path, entry = register_model_profile(
+        model_root=model_root,
+        model_id=args.model_id,
+        model_dir=model_dir,
+        display_name=args.display_name,
+        domain=args.domain,
+        version=args.version,
+        description=args.description,
+        source_model_id=args.source_model_id,
+        training_manifest=args.training_manifest,
+        metrics_path=args.metrics_path,
+        make_default=bool(args.make_default),
+    )
+    print(
+        "[model-register] "
+        f"model_id={entry.get('model_id')} checkpoints={entry.get('checkpoint_count')} "
+        f"default={'yes' if bool(args.make_default) else 'no'}"
+    )
+    print(f"[model-register] registry: {registry_path}")
+    return 0
+
+
+def _cmd_model_list(args: argparse.Namespace) -> int:
+    model_root = _resolve_model_root(args.model_root)
+    payload = {
+        "model_root": str(model_root),
+        "registry_path": str(get_registry_path(model_root)),
+        "models": list_model_profiles(model_root),
+    }
+    if args.as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    models = payload.get("models", [])
+    print(f"[model-list] model_root={model_root}")
+    print(f"[model-list] discovered {len(models)} model profile(s)")
+    for entry in models:
+        mid = str(entry.get("model_id", "")).strip()
+        version = str(entry.get("version", "")).strip()
+        display = str(entry.get("display_name", "")).strip() or mid
+        rel = str(entry.get("relative_dir", "")).strip()
+        print(f"  - {display} ({mid}@{version}) -> {rel}")
+    return 0
+
+
 def _cmd_explain(args: argparse.Namespace) -> int:
     from motionscore.inference.model import ModelEnsemble
     try:
@@ -484,7 +755,14 @@ def _cmd_explain(args: argparse.Namespace) -> int:
             return 0
 
     session = _session_from_index(hit)
-    ensemble = ModelEnsemble(args.model_dir, device=args.device)
+    model_root = _resolve_model_root(args.model_root)
+    model_id = str(getattr(args, "model_id", "") or hit.get("model_id", "") or "base-v1").strip()
+    ensemble = ModelEnsemble(
+        model_dir=args.model_dir,
+        model_root=model_root,
+        model_id=model_id,
+        device=args.device,
+    )
     print(f"[explain] using torch device={ensemble.model_device()}")
     aim_volume = read_aim(session.raw_image_path, scaling=args.scaling)
     prediction = predict_scan(
@@ -533,6 +811,18 @@ def _build_parser() -> argparse.ArgumentParser:
     predict.add_argument("input_root", type=Path)
     predict.add_argument("--output-root", type=Path, default=None)
     predict.add_argument("--model-dir", type=Path, default=None)
+    predict.add_argument(
+        "--model-root",
+        type=Path,
+        default=None,
+        help="Model registry root containing model_registry.json (defaults to ~/.motionscore/MotionScore/models).",
+    )
+    predict.add_argument(
+        "--model-id",
+        type=str,
+        default="base-v1",
+        help="Model profile id from model_registry.json (ignored when --model-dir is provided).",
+    )
     predict.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "mps", "cuda"])
     predict.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
     predict.add_argument("--stackheight", type=int, default=168)
@@ -597,6 +887,18 @@ def _build_parser() -> argparse.ArgumentParser:
     explain.add_argument("derivatives_root", type=Path)
     explain.add_argument("--scan-id", required=True)
     explain.add_argument("--model-dir", type=Path, default=None)
+    explain.add_argument(
+        "--model-root",
+        type=Path,
+        default=None,
+        help="Model registry root containing model_registry.json (defaults to ~/.motionscore/MotionScore/models).",
+    )
+    explain.add_argument(
+        "--model-id",
+        type=str,
+        default="",
+        help="Model profile id from model_registry.json (defaults to scan model_id from index.tsv).",
+    )
     explain.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "mps", "cuda"])
     explain.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
     explain.add_argument("--stackheight", type=int, default=168)
@@ -612,6 +914,84 @@ def _build_parser() -> argparse.ArgumentParser:
     export = subparsers.add_parser("export", help="Export final grades across all scans")
     export.add_argument("derivatives_root", type=Path)
     export.add_argument("--output", type=Path, default=None)
+
+    import_final = subparsers.add_parser("import-final-grades", help="Import final grades and fill only missing manual/final grades")
+    import_final.add_argument("derivatives_root", type=Path)
+    import_final.add_argument("--input", required=True, type=Path)
+    import_final.add_argument("--reviewer", default="import")
+
+    train_prepare = subparsers.add_parser(
+        "train-prepare",
+        help="Build slice-level training manifest from review/prediction outputs (manual labels take priority).",
+    )
+    train_prepare.add_argument("derivatives_root", type=Path)
+    train_prepare.add_argument("--output", type=Path, default=None)
+    train_prepare.add_argument("--min-auto-confidence", type=float, default=0.70)
+    train_prepare.add_argument(
+        "--slice-step",
+        type=int,
+        default=1,
+        help="Use every n-th slice when creating the training manifest and slice cache DB.",
+    )
+    train_prepare.add_argument(
+        "--slice-count",
+        type=int,
+        default=8,
+        help="Randomized per-scan slice sample count (0 disables and uses --slice-step).",
+    )
+    train_prepare.add_argument("--include-auto-without-manual", action="store_true", default=False)
+    train_prepare.add_argument("--seed", type=int, default=13)
+    train_prepare.add_argument("--train-ratio", type=float, default=0.70)
+    train_prepare.add_argument("--val-ratio", type=float, default=0.15)
+    train_prepare.add_argument("--test-ratio", type=float, default=0.15)
+    train_prepare.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
+
+    train = subparsers.add_parser(
+        "train",
+        help="Run PyTorch transfer learning from base checkpoints using a prepared slice manifest.",
+    )
+    train.add_argument("--manifest", required=True, type=Path)
+    train.add_argument("--output-model-dir", required=True, type=Path)
+    train.add_argument("--init-model-dir", type=Path, default=None)
+    train.add_argument("--model-root", type=Path, default=None)
+    train.add_argument("--init-model-id", type=str, default="base-v1")
+    train.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "mps", "cuda"])
+    train.add_argument("--scaling", type=str, default="native", choices=["native", "none", "mu", "hu", "bmd", "density"])
+    train.add_argument("--batch-size", type=int, default=24)
+    train.add_argument("--epochs-head", type=int, default=10)
+    train.add_argument("--epochs-finetune", type=int, default=50)
+    train.add_argument("--lr-head", type=float, default=1e-3)
+    train.add_argument("--lr-finetune", type=float, default=1e-4)
+    train.add_argument("--early-stopping-patience", type=int, default=10)
+    train.add_argument("--early-stopping-min-delta", type=float, default=1e-4)
+    train.add_argument("--aug-hflip", dest="aug_hflip", action="store_true", default=True)
+    train.add_argument("--no-aug-hflip", dest="aug_hflip", action="store_false")
+    train.add_argument("--aug-vflip", dest="aug_vflip", action="store_true", default=True)
+    train.add_argument("--no-aug-vflip", dest="aug_vflip", action="store_false")
+    train.add_argument("--aug-rotate", dest="aug_rotate", action="store_true", default=False)
+    train.add_argument("--no-aug-rotate", dest="aug_rotate", action="store_false")
+    train.add_argument("--aug-crop", dest="aug_crop", action="store_true", default=False)
+    train.add_argument("--no-aug-crop", dest="aug_crop", action="store_false")
+    train.add_argument("--max-cache-scans", type=int, default=64)
+    train.add_argument("--num-workers", type=int, default=0)
+    train.add_argument("--seed", type=int, default=13)
+
+    model_register = subparsers.add_parser("model-register", help="Register a model profile in model_registry.json")
+    model_register.add_argument("--model-root", type=Path, default=None)
+    model_register.add_argument("--model-id", required=True)
+    model_register.add_argument("--model-dir", required=True, type=Path)
+    model_register.add_argument("--display-name", required=True)
+    model_register.add_argument("--domain", type=str, default="custom")
+    model_register.add_argument("--version", type=str, default="v1")
+    model_register.add_argument("--description", type=str, default="")
+    model_register.add_argument("--source-model-id", type=str, default="")
+    model_register.add_argument("--training-manifest", type=str, default="")
+    model_register.add_argument("--metrics-path", type=str, default="")
+    model_register.add_argument("--make-default", action="store_true")
+
+    model_list = subparsers.add_parser("model-list", help="List registered model profiles from model_registry.json")
+    model_list.add_argument("--model-root", type=Path, default=None)
+    model_list.add_argument("--json", dest="as_json", action="store_true")
 
     return parser
 
@@ -635,6 +1015,16 @@ def main() -> None:
             raise SystemExit(_cmd_explain(args))
         if args.command == "export":
             raise SystemExit(_cmd_export(args))
+        if args.command == "import-final-grades":
+            raise SystemExit(_cmd_import_final_grades(args))
+        if args.command == "train-prepare":
+            raise SystemExit(_cmd_train_prepare(args))
+        if args.command == "train":
+            raise SystemExit(_cmd_train(args))
+        if args.command == "model-register":
+            raise SystemExit(_cmd_model_register(args))
+        if args.command == "model-list":
+            raise SystemExit(_cmd_model_list(args))
 
         raise SystemExit(1)
     except SystemExit:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from collections import Counter
 from pathlib import Path
 
@@ -594,3 +595,102 @@ def export_reviews(index_rows: list[dict[str, str]], derivatives_root: Path, out
         fields.append(f"reviewer_{idx}_grade")
     write_tsv(output_path, export_rows, fields)
     return output_path
+
+
+def _read_grades_table(table_path: Path) -> list[dict[str, str]]:
+    raw = table_path.read_text(encoding="utf-8").splitlines()
+    if not raw:
+        return []
+    sample = "\n".join(raw[:5])
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
+        delimiter = dialect.delimiter
+    except Exception:
+        delimiter = "\t" if "\t" in sample else ","
+    with table_path.open("r", encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream, delimiter=delimiter)
+        return [dict(row) for row in reader]
+
+
+def import_final_grades(
+    *,
+    index_rows: list[dict[str, str]],
+    derivatives_root: Path,
+    import_path: Path,
+    reviewer: str = "import",
+) -> dict[str, int]:
+    imported_rows = _read_grades_table(import_path)
+    if not imported_rows:
+        raise FileNotFoundError(f"No rows found in import file: {import_path}")
+
+    by_scan_id = {
+        str(row.get("scan_id", "")).strip(): row
+        for row in imported_rows
+        if str(row.get("scan_id", "")).strip()
+    }
+    if not by_scan_id:
+        raise ValueError("Import file must contain a non-empty 'scan_id' column")
+
+    imported = 0
+    skipped_existing = 0
+    missing_scan = 0
+
+    for index_row in index_rows:
+        scan_id = str(index_row.get("scan_id", "")).strip()
+        if not scan_id:
+            continue
+        source_row = by_scan_id.get(scan_id)
+        if source_row is None:
+            continue
+
+        review_path = (derivatives_root / index_row["review_tsv"]).resolve()
+        review_audit_path = (derivatives_root / index_row["review_audit"]).resolve()
+        review_json_path = (derivatives_root / index_row["review_json"]).resolve() if index_row.get("review_json") else None
+        rows = read_tsv(review_path)
+        if not rows:
+            missing_scan += 1
+            continue
+
+        hit = next((row for row in rows if str(row.get("scan_id", "")).strip() == scan_id), None)
+        if hit is None:
+            missing_scan += 1
+            continue
+
+        if str(hit.get("manual_grade", "")).strip() or str(hit.get("final_grade", "")).strip():
+            skipped_existing += 1
+            continue
+
+        grade_txt = str(source_row.get("final_grade", "") or source_row.get("manual_grade", "")).strip()
+        grade = _manual_grade_or_none(grade_txt)
+        if grade is None:
+            continue
+
+        updated = apply_manual_review(
+            review_tsv_path=review_path,
+            review_audit_path=review_audit_path,
+            review_json_path=review_json_path,
+            scan_id=scan_id,
+            manual_grade=int(grade),
+            reviewer=str(source_row.get("reviewer", "")).strip() or reviewer,
+        )
+
+        audit_rows = read_tsv(review_audit_path)
+        if audit_rows:
+            audit_rows[-1]["event"] = "import_final_grade"
+            notes = [f"source={import_path.name}"]
+            source_reviewer = str(source_row.get("reviewer", "")).strip()
+            if source_reviewer:
+                notes.append(f"source_reviewer={source_reviewer}")
+            audit_rows[-1]["notes"] = ";".join(notes)
+            write_tsv(review_audit_path, audit_rows, AUDIT_FIELDS)
+
+        if updated:
+            imported += 1
+
+    extra_ids = sorted(set(by_scan_id.keys()) - {str(row.get("scan_id", "")).strip() for row in index_rows})
+    missing_scan += len(extra_ids)
+    return {
+        "imported": int(imported),
+        "skipped_existing": int(skipped_existing),
+        "missing_scan": int(missing_scan),
+    }

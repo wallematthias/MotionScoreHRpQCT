@@ -60,11 +60,11 @@ pip install -e ".[torch]"
 
 ## Models
 
-Place torch model files (for example `DNN_0.pt` ... `DNN_9.pt`) in one of these locations:
+Use a model registry rooted at `--model-root` (default `~/.motionscore/MotionScore/models`).
 
-- `./models`
-- `motionscore/models`
-- explicit `--model-dir <path>`
+Each registered profile points to a directory containing torch checkpoints:
+- `DNN_0.pt`, `DNN_1.pt`, ... (ensemble members)
+- `model_registry.json` at the model root
 
 Model weights are licensed for usage tracking. In the current deployment configuration, licenses are automatically granted at signup.
 
@@ -81,6 +81,8 @@ motionscore discover /path/to/dataset --json
 
 ```bash
 motionscore predict /path/to/dataset --confidence-threshold 75
+# choose a registered model profile
+motionscore predict /path/to/dataset --model-id base-v1
 # blinded operator training mode
 motionscore predict /path/to/dataset --training-mode
 # optional: restrict to one scan_id (repeat flag for multiple)
@@ -153,6 +155,55 @@ Export includes current per-scan review state plus machine-readable multi-review
 - `consensus_mean_manual_grade`
 - `consensus_grade_rounded`
 - dynamic reviewer slots: `reviewer_1_id`, `reviewer_1_grade`, `reviewer_2_id`, `reviewer_2_grade`, ...
+
+### 7) Prepare slice-level retraining manifest (manual labels take priority)
+
+```bash
+motionscore train-prepare /path/to/dataset/derivatives/MotionScore \
+  --output /path/to/dataset/derivatives/MotionScore/training/train_manifest.tsv \
+  --slice-count 8 \
+  --min-auto-confidence 0.70 \
+  --include-auto-without-manual
+```
+
+Training label policy:
+- If a manual scan grade exists, it is treated as ground truth and propagated to all slices.
+- If no manual grade exists, per-slice auto labels are used (confidence-filtered).
+- `--slice-count 8` samples eight randomized, spread-out slices per scan (seeded, reproducible).
+- Set `--slice-count 0` to disable random count sampling and use `--slice-step` instead.
+- `train-prepare` also builds a slice-wise cache database at `training/slice_db/*.npy` and records
+  `cache_npy_path` + `cache_index` in the manifest so training can load preprocessed slices directly.
+
+### 8) Transfer-learn from base model weights (PyTorch)
+
+```bash
+motionscore train \
+  --manifest /path/to/dataset/derivatives/MotionScore/training/train_manifest.tsv \
+  --model-root ~/.motionscore/MotionScore/models \
+  --init-model-id base-v1 \
+  --early-stopping-patience 10 \
+  --output-model-dir ~/.motionscore/MotionScore/models/knee-v1
+```
+
+Training writes:
+- `training_metrics.json`
+- `training_plot_live.png` (updated every epoch)
+- `training_plot.png` (final summary plot)
+- `training_plot_model_<n>.png` (per-ensemble-model curves)
+
+### 9) Register and select custom model profiles
+
+```bash
+motionscore model-register \
+  --model-root ~/.motionscore/MotionScore/models \
+  --model-id knee-v1 \
+  --model-dir ~/.motionscore/MotionScore/models/knee-v1 \
+  --display-name "Knee Transfer v1" \
+  --domain knee \
+  --version v1
+
+motionscore model-list --model-root ~/.motionscore/MotionScore/models
+```
 
 ## Slicer Integration Contract
 
