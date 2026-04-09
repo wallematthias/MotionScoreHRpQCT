@@ -8,10 +8,9 @@ from motionscore.utils import read_tsv, utc_now_iso, write_json, write_tsv
 REVIEW_FIELDS = [
     "scan_id",
     "subject_id",
-    "site",
-    "session_id",
     "automatic_grade",
     "automatic_confidence",
+    "manual_mode",
     "confidence_threshold",
     "manual_grade",
     "final_grade",
@@ -171,11 +170,16 @@ def compute_review_agreement(review_rows: list[dict[str, str]]) -> dict[str, flo
 
 
 def _build_auto_review_row(prediction_row: dict[str, str], threshold: int, training_mode: bool) -> dict[str, str]:
+    manual_mode = _to_bool(prediction_row.get("manual_mode"), default=False)
     auto_grade = _to_int(prediction_row.get("automatic_grade"))
     auto_conf = _to_int(prediction_row.get("automatic_confidence"))
     now = utc_now_iso()
 
-    if training_mode:
+    if manual_mode:
+        status = "pending"
+        final_grade = ""
+        reviewed_at = ""
+    elif training_mode:
         status = "training_pending"
         final_grade = ""
         reviewed_at = ""
@@ -191,10 +195,9 @@ def _build_auto_review_row(prediction_row: dict[str, str], threshold: int, train
     return {
         "scan_id": prediction_row.get("scan_id", ""),
         "subject_id": prediction_row.get("subject_id", ""),
-        "site": prediction_row.get("site", ""),
-        "session_id": prediction_row.get("session_id", ""),
-        "automatic_grade": str(auto_grade),
-        "automatic_confidence": str(auto_conf),
+        "automatic_grade": "" if manual_mode else str(auto_grade),
+        "automatic_confidence": "" if manual_mode else str(auto_conf),
+        "manual_mode": "1" if manual_mode else "0",
         "confidence_threshold": str(int(threshold)),
         "manual_grade": "",
         "final_grade": final_grade,
@@ -212,13 +215,17 @@ def _reset_row_to_unreviewed(row: dict[str, str], now: str) -> None:
     auto_grade = _to_int(row.get("automatic_grade"), default=0)
     auto_conf = _to_int(row.get("automatic_confidence"), default=0)
     training_mode = _to_bool(row.get("training_mode"), default=False)
+    manual_mode = _to_bool(row.get("manual_mode"), default=False)
 
     row["manual_grade"] = ""
     row["reviewer"] = ""
     row["reviewed_at"] = ""
     row["prediction_revealed_at"] = ""
 
-    if training_mode:
+    if manual_mode:
+        row["review_status"] = "pending"
+        row["final_grade"] = ""
+    elif training_mode:
         row["review_status"] = "training_pending"
         row["final_grade"] = ""
     elif auto_conf >= threshold:
@@ -323,6 +330,7 @@ def apply_manual_review(
             continue
         auto_grade = _to_int(row.get("automatic_grade"))
         row_training_mode = _to_bool(row.get("training_mode"), default=False)
+        row_manual_mode = _to_bool(row.get("manual_mode"), default=False)
         if training_mode is not None:
             row_training_mode = bool(training_mode)
         row["manual_grade"] = str(int(manual_grade))
@@ -330,6 +338,9 @@ def apply_manual_review(
         if row_training_mode:
             row["review_status"] = "training_completed"
             row["prediction_revealed_at"] = now
+        elif row_manual_mode:
+            row["review_status"] = "manual_confirmed"
+            row["prediction_revealed_at"] = row.get("prediction_revealed_at", "")
         else:
             row["review_status"] = "manual_confirmed" if int(manual_grade) == auto_grade else "manual_override"
             row["prediction_revealed_at"] = row.get("prediction_revealed_at", "")
@@ -531,10 +542,9 @@ def export_reviews(index_rows: list[dict[str, str]], derivatives_root: Path, out
                 {
                     "scan_id": scan_id,
                     "subject_id": review_row.get("subject_id", ""),
-                    "site": review_row.get("site", ""),
-                    "session_id": review_row.get("session_id", ""),
                     "automatic_grade": review_row.get("automatic_grade", ""),
                     "automatic_confidence": review_row.get("automatic_confidence", ""),
+                    "manual_mode": review_row.get("manual_mode", ""),
                     "manual_grade": review_row.get("manual_grade", ""),
                     "final_grade": review_row.get("final_grade", ""),
                     "review_status": review_row.get("review_status", ""),
@@ -563,10 +573,9 @@ def export_reviews(index_rows: list[dict[str, str]], derivatives_root: Path, out
     fields = [
         "scan_id",
         "subject_id",
-        "site",
-        "session_id",
         "automatic_grade",
         "automatic_confidence",
+        "manual_mode",
         "manual_grade",
         "final_grade",
         "review_status",

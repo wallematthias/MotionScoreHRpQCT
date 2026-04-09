@@ -218,3 +218,38 @@ def test_export_reviews_with_multi_reviewer_consensus(tmp_path: Path) -> None:
     assert row["reviewer_1_grade"] == "2"
     assert row["reviewer_2_id"] == "opB"
     assert row["reviewer_2_grade"] == "4"
+
+
+def test_manual_mode_review_flow(tmp_path: Path) -> None:
+    review_tsv = tmp_path / "review.tsv"
+    review_json = tmp_path / "review.json"
+    review_audit = tmp_path / "review_audit.tsv"
+
+    pred = {
+        "scan_id": "scan-1",
+        "subject_id": "001",
+        "manual_mode": "1",
+        "automatic_grade": "",
+        "automatic_confidence": "",
+    }
+    rows = initialize_or_update_review(
+        review_tsv_path=review_tsv,
+        review_json_path=review_json,
+        review_audit_path=review_audit,
+        prediction_rows=[pred],
+        confidence_threshold=75,
+    )
+    assert rows[0]["manual_mode"] == "1"
+    assert rows[0]["review_status"] == "pending"
+    assert rows[0]["automatic_grade"] == ""
+
+    updated = apply_manual_review(
+        review_tsv_path=review_tsv,
+        review_audit_path=review_audit,
+        review_json_path=review_json,
+        scan_id="scan-1",
+        manual_grade=3,
+        reviewer="opA",
+    )
+    assert updated["review_status"] == "manual_confirmed"
+    assert updated["final_grade"] == "3"

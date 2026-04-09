@@ -42,9 +42,6 @@ from motionscore.utils import (
 INDEX_FIELDS = [
     "scan_id",
     "subject_id",
-    "site",
-    "session_id",
-    "stack_index",
     "raw_image_path",
     "predictions_tsv",
     "review_tsv",
@@ -55,6 +52,7 @@ INDEX_FIELDS = [
     "attention_map_path",
     "automatic_grade",
     "automatic_confidence",
+    "manual_mode",
     "model_version",
     "predicted_at",
 ]
@@ -62,14 +60,12 @@ INDEX_FIELDS = [
 PREDICTION_FIELDS = [
     "scan_id",
     "subject_id",
-    "site",
-    "session_id",
-    "stack_index",
     "raw_image_path",
     "preview_png_path",
     "slice_profile_png_path",
     "automatic_grade",
     "automatic_confidence",
+    "manual_mode",
     "mean_confidence",
     "stack_ranges",
     "stack_grades",
@@ -143,9 +139,9 @@ def _write_dataset_description(derivatives_root: Path) -> None:
 
 def _session_from_index(row: dict[str, str]) -> RawSession:
     return RawSession(
-        subject_id=row["subject_id"],
-        site=row["site"],
-        session_id=row["session_id"],
+        subject_id=row.get("subject_id", ""),
+        site=row.get("site", "tibia") or "tibia",
+        session_id=row.get("session_id", "T1") or "T1",
         raw_image_path=Path(row["raw_image_path"]),
         stack_index=int(row["stack_index"]) if row.get("stack_index") else None,
     )
@@ -224,24 +220,36 @@ def _cmd_predict(args: argparse.Namespace) -> int:
     if confidence_threshold < 0 or confidence_threshold > 100:
         raise ValueError("confidence threshold must be in [0, 100]")
     preview_panels = int(max(1, min(9, int(args.preview_panels))))
+    manual_only = bool(getattr(args, "manual_only", False))
+    if manual_only and bool(args.save_preview_png):
+        print("[predict] manual-only mode: preview PNG export disabled")
 
-    ensemble = ModelEnsemble(args.model_dir, device=args.device)
-    model_version = ensemble.model_version()
-    print(f"[predict] using torch device={ensemble.model_device()}")
+    ensemble = None
+    model_version = "manual-only" if manual_only else ""
+    if manual_only:
+        print("[predict] manual-only mode: skipping CNN inference")
+    else:
+        ensemble = ModelEnsemble(args.model_dir, device=args.device)
+        model_version = ensemble.model_version()
+        print(f"[predict] using torch device={ensemble.model_device()}")
 
     index_updates: list[dict[str, str]] = []
     for session in sessions:
         scan_id = _scan_id_for_session(session)
-        aim_volume = read_aim(session.raw_image_path, scaling=args.scaling)
-        prediction = predict_scan(
-            aim_volume.data,
-            ensemble=ensemble,
-            stackheight=int(args.stackheight),
-            on_incomplete_stack=args.on_incomplete_stack,
-            slice_batch_size=int(args.slice_batch_size),
-            slice_step=int(args.slice_step),
-            retain_preprocessed=False,
-        )
+        if manual_only:
+            prediction = None
+            aim_volume = None
+        else:
+            aim_volume = read_aim(session.raw_image_path, scaling=args.scaling)
+            prediction = predict_scan(
+                aim_volume.data,
+                ensemble=ensemble,
+                stackheight=int(args.stackheight),
+                on_incomplete_stack=args.on_incomplete_stack,
+                slice_batch_size=int(args.slice_batch_size),
+                slice_step=int(args.slice_step),
+                retain_preprocessed=False,
+            )
 
         predicted_at = utc_now_iso()
 
@@ -256,25 +264,23 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         prediction_row = {
             "scan_id": scan_id,
             "subject_id": session.subject_id,
-            "site": session.site,
-            "session_id": session.session_id,
-            "stack_index": "" if session.stack_index is None else str(session.stack_index),
             "raw_image_path": str(session.raw_image_path.resolve()),
             "preview_png_path": "",
             "slice_profile_png_path": "",
-            "automatic_grade": str(prediction.automatic_grade),
-            "automatic_confidence": str(prediction.automatic_confidence),
-            "mean_confidence": str(prediction.mean_confidence),
-            "stack_ranges": json.dumps(prediction.stack_ranges),
-            "stack_grades": json.dumps(prediction.stack_grades),
-            "stack_confidences": json.dumps(prediction.stack_confidences),
-            "slice_grades": json.dumps(prediction.slice_grades),
-            "slice_confidences": json.dumps(prediction.slice_confidences),
+            "automatic_grade": "" if manual_only else str(prediction.automatic_grade),
+            "automatic_confidence": "" if manual_only else str(prediction.automatic_confidence),
+            "manual_mode": "1" if manual_only else "0",
+            "mean_confidence": "" if manual_only else str(prediction.mean_confidence),
+            "stack_ranges": "" if manual_only else json.dumps(prediction.stack_ranges),
+            "stack_grades": "" if manual_only else json.dumps(prediction.stack_grades),
+            "stack_confidences": "" if manual_only else json.dumps(prediction.stack_confidences),
+            "slice_grades": "" if manual_only else json.dumps(prediction.slice_grades),
+            "slice_confidences": "" if manual_only else json.dumps(prediction.slice_confidences),
             "model_version": model_version,
             "predicted_at": predicted_at,
         }
 
-        if bool(args.save_preview_png):
+        if bool(args.save_preview_png) and not manual_only and aim_volume is not None and prediction is not None:
             preview_dir = get_preview_dir(derivatives_root, session)
             preview_path = preview_dir / f"{scan_id}_preview.png"
             profile_path = preview_dir / f"{scan_id}_slice_profile.png"
@@ -313,9 +319,6 @@ def _cmd_predict(args: argparse.Namespace) -> int:
             {
                 "scan_id": scan_id,
                 "subject_id": session.subject_id,
-                "site": session.site,
-                "session_id": session.session_id,
-                "stack_index": "" if session.stack_index is None else str(session.stack_index),
                 "raw_image_path": str(session.raw_image_path.resolve()),
                 "predictions_tsv": to_relpath(predictions_tsv, derivatives_root),
                 "review_tsv": to_relpath(review_tsv, derivatives_root),
@@ -324,19 +327,24 @@ def _cmd_predict(args: argparse.Namespace) -> int:
                 "preview_png_path": prediction_row.get("preview_png_path", ""),
                 "slice_profile_png_path": prediction_row.get("slice_profile_png_path", ""),
                 "attention_map_path": "",
-                "automatic_grade": str(prediction.automatic_grade),
-                "automatic_confidence": str(prediction.automatic_confidence),
+                "automatic_grade": prediction_row["automatic_grade"],
+                "automatic_confidence": prediction_row["automatic_confidence"],
+                "manual_mode": prediction_row["manual_mode"],
                 "model_version": model_version,
                 "predicted_at": predicted_at,
             }
         )
 
-        print(
-            f"[predict] {scan_id} grade={prediction.automatic_grade} conf={prediction.automatic_confidence}%"
-        )
+        if manual_only:
+            print(f"[predict] {scan_id} manual-only initialized")
+        else:
+            print(
+                f"[predict] {scan_id} grade={prediction.automatic_grade} conf={prediction.automatic_confidence}%"
+            )
 
         # Keep memory bounded across large datasets by releasing per-scan arrays early.
-        prediction.preprocessed_scan = None
+        if prediction is not None:
+            prediction.preprocessed_scan = None
         aim_volume = None
         gc.collect()
 
@@ -359,10 +367,9 @@ def _cmd_review_init(args: argparse.Namespace) -> int:
         prediction_row = {
             "scan_id": row.get("scan_id", ""),
             "subject_id": row.get("subject_id", ""),
-            "site": row.get("site", ""),
-            "session_id": row.get("session_id", ""),
             "automatic_grade": row.get("automatic_grade", ""),
             "automatic_confidence": row.get("automatic_confidence", ""),
+            "manual_mode": row.get("manual_mode", ""),
         }
         initialize_or_update_review(
             review_tsv_path=derivatives_root / row["review_tsv"],
@@ -553,6 +560,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Restrict prediction to one or more scan_id entries (repeat flag for multiple scans)",
+    )
+    predict.add_argument(
+        "--manual-only",
+        action="store_true",
+        help="Initialize review pipeline without CNN inference (manual grading only).",
     )
     predict.add_argument("--preview-panels", type=int, default=3, help="Number of slice panels in preview PNG (1-9)")
     predict.add_argument("--preview-png", dest="save_preview_png", action="store_true", default=True, help="Save per-scan preview PNG into derivatives")

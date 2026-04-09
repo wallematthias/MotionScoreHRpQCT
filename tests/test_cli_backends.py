@@ -41,6 +41,13 @@ def test_predict_slice_step_flag() -> None:
     assert args.slice_step == 3
 
 
+def test_predict_manual_only_flag() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["predict", "/tmp/data", "--manual-only"])
+    assert args.command == "predict"
+    assert args.manual_only is True
+
+
 def test_predict_scan_id_filter_flags() -> None:
     parser = _build_parser()
     args = parser.parse_args(

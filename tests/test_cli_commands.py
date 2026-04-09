@@ -49,6 +49,7 @@ def _predict_args(root: Path) -> argparse.Namespace:
         on_incomplete_stack="keep_last",
         confidence_threshold=75,
         training_mode=False,
+        manual_only=False,
         scan_id=None,
         preview_panels=3,
         save_preview_png=True,
@@ -120,6 +121,9 @@ def test_cmd_predict_and_review_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_pa
     index_rows = read_tsv(derivatives / "index.tsv")
     assert len(index_rows) == 1
     scan_id = index_rows[0]["scan_id"]
+    assert "site" not in index_rows[0]
+    assert "session_id" not in index_rows[0]
+    assert "stack_index" not in index_rows[0]
 
     args_init = argparse.Namespace(derivatives_root=derivatives, confidence_threshold=70, training_mode=True)
     assert cli._cmd_review_init(args_init) == 0
@@ -176,6 +180,37 @@ def test_cmd_predict_profile_png_missing_dependency(monkeypatch: pytest.MonkeyPa
     assert cli._cmd_predict(args) == 0
     err = capsys.readouterr().err
     assert "skipping slice profile PNG" in err
+
+
+def test_cmd_predict_manual_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    aim_path = root / "randomfilename.AIM"
+    aim_path.write_bytes(b"aim")
+    session = RawSession("randomfilename", "tibia", "T1", aim_path)
+
+    monkeypatch.setattr(cli, "discover_raw_sessions", lambda **_kwargs: [session])
+    monkeypatch.setattr(
+        __import__("motionscore.inference.model", fromlist=["ModelEnsemble"]),
+        "ModelEnsemble",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("ModelEnsemble should not be used in manual-only mode")),
+    )
+
+    args = _predict_args(root)
+    args.manual_only = True
+    assert cli._cmd_predict(args) == 0
+
+    derivatives = root / "derivatives" / "MotionScore"
+    index_rows = read_tsv(derivatives / "index.tsv")
+    assert len(index_rows) == 1
+    assert index_rows[0]["manual_mode"] == "1"
+    assert index_rows[0]["automatic_grade"] == ""
+
+    pred_tsv = derivatives / index_rows[0]["predictions_tsv"]
+    pred_rows = read_tsv(pred_tsv)
+    assert len(pred_rows) == 1
+    assert pred_rows[0]["manual_mode"] == "1"
+    assert pred_rows[0]["automatic_confidence"] == ""
 
 
 def test_cmd_explain_existing_and_overwrite(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
