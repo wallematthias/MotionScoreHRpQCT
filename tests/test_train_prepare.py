@@ -414,3 +414,86 @@ def test_build_training_manifest_keeps_val_split_non_empty_when_possible(
     assert stats["split_train"] > 0
     assert stats["split_val"] > 0
     assert stats["split_test"] > 0
+
+
+def test_build_training_manifest_assigns_deterministic_fold_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    derivatives = tmp_path / "MotionScore"
+    derivatives.mkdir(parents=True)
+    monkeypatch.setattr(
+        prepare_module,
+        "read_aim",
+        lambda _path, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 8), dtype=np.float32)),
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "preprocess_slice",
+        lambda arr: (np.asarray(arr, dtype=np.uint8), {}),
+    )
+
+    index_rows = []
+    for idx in range(20):
+        subject_id = f"S{idx:02d}"
+        scan_id = f"scan_{idx:02d}"
+        rel_base = f"sub-{subject_id}/site-tibia/ses-T1"
+        _write_scan_tables(
+            derivatives,
+            rel_base=rel_base,
+            scan_id=scan_id,
+            subject_id=subject_id,
+            manual_grade="3",
+            slice_grades="[3,3,3,3]",
+            slice_conf="[0.9,0.9,0.9,0.9]",
+        )
+        index_rows.append(
+            {
+                "scan_id": scan_id,
+                "subject_id": subject_id,
+                "raw_image_path": f"/tmp/{scan_id}.AIM",
+                "predictions_tsv": f"{rel_base}/predictions/predictions.tsv",
+                "review_tsv": f"{rel_base}/review/review.tsv",
+            }
+        )
+
+    write_tsv(
+        derivatives / "index.tsv",
+        index_rows,
+        ["scan_id", "subject_id", "raw_image_path", "predictions_tsv", "review_tsv"],
+    )
+
+    out_a = derivatives / "training" / "fold_manifest_a.tsv"
+    out_b = derivatives / "training" / "fold_manifest_b.tsv"
+
+    build_training_manifest(
+        derivatives_root=derivatives,
+        output_path=out_a,
+        min_auto_confidence=0.7,
+        slice_step=1,
+        include_auto_without_manual=False,
+        seed=13,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        cv_folds=10,
+    )
+    build_training_manifest(
+        derivatives_root=derivatives,
+        output_path=out_b,
+        min_auto_confidence=0.7,
+        slice_step=1,
+        include_auto_without_manual=False,
+        seed=13,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        cv_folds=10,
+    )
+
+    rows_a = read_tsv(out_a)
+    rows_b = read_tsv(out_b)
+
+    fold_map_a = {(r["subject_id"], r["scan_id"]): int(r["fold_id"]) for r in rows_a}
+    fold_map_b = {(r["subject_id"], r["scan_id"]): int(r["fold_id"]) for r in rows_b}
+    assert fold_map_a == fold_map_b
+    assert len(set(fold_map_a.values())) >= 8

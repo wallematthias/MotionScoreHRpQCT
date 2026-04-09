@@ -27,6 +27,7 @@ TRAIN_MANIFEST_FIELDS = [
     "auto_slice_confidence",
     "cache_npy_path",
     "cache_index",
+    "fold_id",
 ]
 
 AUTO_CONFIDENCE_EPSILON = 1e-6
@@ -133,6 +134,18 @@ def _assign_subject_splits(
         for sid in ranked[offset:offset + count]:
             out[sid] = label
         offset += count
+    return out
+
+
+def _assign_subject_folds(subject_ids: list[str], *, seed: int, cv_folds: int) -> dict[str, int]:
+    n_folds = int(max(2, cv_folds))
+    ranked = sorted(
+        [str(sid).strip() for sid in subject_ids if str(sid).strip()],
+        key=lambda sid: hashlib.sha1(f"{seed}:{sid}".encode("utf-8")).hexdigest(),
+    )
+    out: dict[str, int] = {}
+    for idx, sid in enumerate(ranked):
+        out[sid] = int(idx % n_folds)
     return out
 
 
@@ -285,6 +298,7 @@ def build_training_manifest(
     val_ratio: float,
     test_ratio: float,
     slice_count: int = 0,
+    cv_folds: int = 10,
     scaling: str = "native",
 ) -> dict[str, int | float]:
     step = int(slice_step)
@@ -295,6 +309,8 @@ def build_training_manifest(
     ratio_sum = float(train_ratio + val_ratio + test_ratio)
     if abs(ratio_sum - 1.0) > 1e-6:
         raise ValueError("train/val/test ratios must sum to 1.0")
+    if int(cv_folds) < 2:
+        raise ValueError("cv_folds must be >= 2")
 
     index_rows = read_tsv(derivatives_root / "index.tsv")
     if not index_rows:
@@ -308,6 +324,7 @@ def build_training_manifest(
         val_ratio=val_ratio,
         test_ratio=test_ratio,
     )
+    fold_by_subject = _assign_subject_folds(subject_ids, seed=seed, cv_folds=int(cv_folds))
 
     out_rows: list[dict[str, str]] = []
     manual_rows = 0
@@ -324,6 +341,7 @@ def build_training_manifest(
 
         raw_image_path = Path(raw_image_path_txt).resolve()
         split = split_by_subject.get(subject_id, "train")
+        fold_id = int(fold_by_subject.get(subject_id, 0))
 
         predictions_rel = str(index_row.get("predictions_tsv", "")).strip()
         review_rel = str(index_row.get("review_tsv", "")).strip()
@@ -373,6 +391,7 @@ def build_training_manifest(
                         "automatic_grade": str(int(auto_grade)) if 1 <= auto_grade <= 5 else "",
                         "automatic_confidence": str(int(auto_conf)) if auto_conf >= 0 else "",
                         "auto_slice_confidence": "",
+                        "fold_id": str(int(fold_id)),
                     }
                 )
                 manual_rows += 1
@@ -432,6 +451,7 @@ def build_training_manifest(
                     "auto_slice_confidence": f"{float(conf_unit):.4f}",
                     "cache_npy_path": "",
                     "cache_index": "",
+                    "fold_id": str(int(fold_id)),
                 }
             )
             auto_rows += 1
@@ -449,8 +469,11 @@ def build_training_manifest(
     write_tsv(output_path, out_rows, TRAIN_MANIFEST_FIELDS)
 
     split_counts = {"train": 0, "val": 0, "test": 0}
+    fold_counts: dict[int, int] = {}
     for row in out_rows:
         split_counts[row["split"]] = split_counts.get(row["split"], 0) + 1
+        fold = _to_int(row.get("fold_id"), default=0)
+        fold_counts[fold] = int(fold_counts.get(fold, 0) + 1)
 
     return {
         "rows_written": len(out_rows),
@@ -461,6 +484,8 @@ def build_training_manifest(
         "split_train": split_counts.get("train", 0),
         "split_val": split_counts.get("val", 0),
         "split_test": split_counts.get("test", 0),
+        "cv_folds": int(cv_folds),
+        "folds_populated": int(len([1 for v in fold_counts.values() if int(v) > 0])),
         "cache_scans": cache_stats.get("cache_scans", 0),
         "cache_slices": cache_stats.get("cache_slices", 0),
     }

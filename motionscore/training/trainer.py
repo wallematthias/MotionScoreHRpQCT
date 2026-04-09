@@ -537,6 +537,49 @@ def _split_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[
     return train_rows, val_rows, test_rows
 
 
+def _split_rows_for_model(
+    rows: list[dict[str, str]],
+    *,
+    model_index: int,
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]], dict[str, int | str]]:
+    fold_rows: list[tuple[dict[str, str], int]] = []
+    for row in rows:
+        fold_txt = str(row.get("fold_id", "")).strip()
+        if not fold_txt:
+            raise ValueError("Manifest row is missing required fold_id. Rebuild manifest with fold-aware train-prepare.")
+        try:
+            fold_rows.append((row, int(float(fold_txt))))
+        except Exception:
+            raise ValueError(f"Invalid fold_id='{fold_txt}' in manifest. fold_id must be an integer.")
+
+    unique_folds = sorted({fold for _, fold in fold_rows})
+    if len(unique_folds) < 2:
+        raise ValueError("Manifest must contain at least 2 distinct fold_id values for fold-aware retraining.")
+
+    n_folds = len(unique_folds)
+    model_fold_rank = int(model_index % max(1, n_folds))
+    val_fold_rank = int((model_fold_rank + 1) % n_folds)
+    model_fold = int(unique_folds[model_fold_rank])
+    val_fold = int(unique_folds[val_fold_rank])
+
+    train_rows = [row for row, fold in fold_rows if fold not in {model_fold, val_fold}]
+    val_rows = [row for row, fold in fold_rows if fold == val_fold]
+    test_rows = [row for row, fold in fold_rows if fold == model_fold]
+
+    if not train_rows or not val_rows or not test_rows:
+        raise ValueError(
+            "Fold-derived split produced an empty train/val/test subset. "
+            "Ensure manifest has enough subjects/rows across folds."
+        )
+
+    return train_rows, val_rows, test_rows, {
+        "mode": "fold_split",
+        "n_folds": int(n_folds),
+        "model_fold": int(model_fold),
+        "val_fold": int(val_fold),
+    }
+
+
 def _checkpoint_state_dict(model_path: Path, *, map_location: str = "cpu") -> dict[str, Any]:
     torch, _, _ = _require_torch()
     payload = torch.load(str(model_path), map_location=torch.device(map_location))
@@ -771,71 +814,78 @@ def run_transfer_learning(cfg: TrainConfig) -> dict[str, Any]:
     _write_training_plot_png([], cfg.output_model_dir / "training_plot_live.png", title="Training Progress | initializing")
 
     rows = _load_manifest_rows(cfg.manifest_path)
-    train_rows, val_rows, test_rows = _split_rows(rows)
     manifest_parent = cfg.manifest_path.resolve().parent
-
-    train_dataset_wrap = _SliceManifestDataset(
-        train_rows,
-        manifest_parent=manifest_parent,
-        scaling=cfg.scaling,
-        max_cache_scans=cfg.max_cache_scans,
-    )
-    val_dataset_wrap = _SliceManifestDataset(
-        val_rows,
-        manifest_parent=manifest_parent,
-        scaling=cfg.scaling,
-        max_cache_scans=cfg.max_cache_scans,
-    )
-    test_dataset_wrap = _SliceManifestDataset(
-        test_rows,
-        manifest_parent=manifest_parent,
-        scaling=cfg.scaling,
-        max_cache_scans=cfg.max_cache_scans,
-    )
-    train_dataset = train_dataset_wrap.to_torch_dataset()
-    val_dataset = val_dataset_wrap.to_torch_dataset()
-    test_dataset = test_dataset_wrap.to_torch_dataset()
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=int(max(1, cfg.batch_size)),
-        shuffle=True,
-        num_workers=int(max(0, cfg.num_workers)),
-        pin_memory=False,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=int(max(1, cfg.batch_size)),
-        shuffle=False,
-        num_workers=int(max(0, cfg.num_workers)),
-        pin_memory=False,
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=int(max(1, cfg.batch_size)),
-        shuffle=False,
-        num_workers=int(max(0, cfg.num_workers)),
-        pin_memory=False,
-    )
 
     init_paths = sorted(cfg.init_model_dir.glob("DNN_*.pt"))
     if not init_paths:
         raise FileNotFoundError(f"No DNN_*.pt checkpoints found in init_model_dir={cfg.init_model_dir}")
 
     device = _resolve_torch_device(cfg.device)
-    print(
-        "[train] "
-        f"device={device} split(train/val/test)={len(train_rows)}/{len(val_rows)}/{len(test_rows)} "
-        f"cache_scans={'unlimited' if cfg.max_cache_scans <= 0 else int(cfg.max_cache_scans)} "
-        f"cache_rows(train/val/test)="
-        f"{train_dataset_wrap.rows_with_cache}/{val_dataset_wrap.rows_with_cache}/{test_dataset_wrap.rows_with_cache}",
-        flush=True,
-    )
+    print(f"[train] device={device}", flush=True)
     per_model: list[dict[str, Any]] = []
     combined_plot_points: list[dict[str, Any]] = []
     combined_x = 0
     base_test_metrics: list[dict[str, Any]] = []
+    split_counts_acc = {"train": 0, "val": 0, "test": 0}
+    fold_mode = ""
     for model_index, init_path in enumerate(init_paths):
+        train_rows, val_rows, test_rows, split_meta = _split_rows_for_model(
+            rows,
+            model_index=model_index,
+        )
+        split_counts_acc["train"] += len(train_rows)
+        split_counts_acc["val"] += len(val_rows)
+        split_counts_acc["test"] += len(test_rows)
+        if not fold_mode:
+            fold_mode = str(split_meta.get("mode", "legacy_split"))
+
+        train_dataset_wrap = _SliceManifestDataset(
+            train_rows,
+            manifest_parent=manifest_parent,
+            scaling=cfg.scaling,
+            max_cache_scans=cfg.max_cache_scans,
+        )
+        val_dataset_wrap = _SliceManifestDataset(
+            val_rows,
+            manifest_parent=manifest_parent,
+            scaling=cfg.scaling,
+            max_cache_scans=cfg.max_cache_scans,
+        )
+        test_dataset_wrap = _SliceManifestDataset(
+            test_rows,
+            manifest_parent=manifest_parent,
+            scaling=cfg.scaling,
+            max_cache_scans=cfg.max_cache_scans,
+        )
+        train_loader = DataLoader(
+            train_dataset_wrap.to_torch_dataset(),
+            batch_size=int(max(1, cfg.batch_size)),
+            shuffle=True,
+            num_workers=int(max(0, cfg.num_workers)),
+            pin_memory=False,
+        )
+        val_loader = DataLoader(
+            val_dataset_wrap.to_torch_dataset(),
+            batch_size=int(max(1, cfg.batch_size)),
+            shuffle=False,
+            num_workers=int(max(0, cfg.num_workers)),
+            pin_memory=False,
+        )
+        test_loader = DataLoader(
+            test_dataset_wrap.to_torch_dataset(),
+            batch_size=int(max(1, cfg.batch_size)),
+            shuffle=False,
+            num_workers=int(max(0, cfg.num_workers)),
+            pin_memory=False,
+        )
+        print(
+            "[train] "
+            f"model={model_index} split_mode={split_meta.get('mode', 'legacy_split')} "
+            f"split(train/val/test)={len(train_rows)}/{len(val_rows)}/{len(test_rows)} "
+            f"cache_rows(train/val/test)="
+            f"{train_dataset_wrap.rows_with_cache}/{val_dataset_wrap.rows_with_cache}/{test_dataset_wrap.rows_with_cache}",
+            flush=True,
+        )
         base_test = _evaluate_checkpoint(
             checkpoint_path=init_path,
             data_loader=test_loader,
@@ -857,6 +907,12 @@ def run_transfer_learning(cfg: TrainConfig) -> dict[str, Any]:
         test_metrics = _run_epoch(model, test_loader, device=device, optimizer=None)
         train_report["base_test"] = base_test
         train_report["test"] = test_metrics
+        train_report["split"] = {
+            "train": len(train_rows),
+            "val": len(val_rows),
+            "test": len(test_rows),
+            **split_meta,
+        }
         train_report["test_improvement"] = {
             "accuracy": float(test_metrics.get("accuracy", 0.0)) - float(base_test.get("accuracy", 0.0)),
             "weighted_kappa": float(test_metrics.get("weighted_kappa", 0.0)) - float(base_test.get("weighted_kappa", 0.0)),
@@ -905,11 +961,12 @@ def run_transfer_learning(cfg: TrainConfig) -> dict[str, Any]:
         "aug_rotate": bool(cfg.aug_rotate),
         "aug_crop": bool(cfg.aug_crop),
         "n_rows": len(rows),
-        "split_counts": {
-            "train": len(train_rows),
-            "val": len(val_rows),
-            "test": len(test_rows),
+        "split_counts_avg_per_model": {
+            "train": int(round(split_counts_acc["train"] / max(1, len(init_paths)))),
+            "val": int(round(split_counts_acc["val"] / max(1, len(init_paths)))),
+            "test": int(round(split_counts_acc["test"] / max(1, len(init_paths)))),
         },
+        "split_mode": fold_mode or "legacy_split",
         "label_counts": {
             str(k): int(v)
             for k, v in sorted(Counter([_as_int(r.get("label"), default=0) for r in rows]).items())

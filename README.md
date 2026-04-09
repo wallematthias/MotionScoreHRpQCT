@@ -162,6 +162,8 @@ Export includes current per-scan review state plus machine-readable multi-review
 motionscore train-prepare /path/to/dataset/derivatives/MotionScore \
   --output /path/to/dataset/derivatives/MotionScore/training/train_manifest.tsv \
   --slice-count 8 \
+  --seed 13 \
+  --cv-folds 10 \
   --min-auto-confidence 0.70 \
   --include-auto-without-manual
 ```
@@ -173,6 +175,9 @@ Training label policy:
 - Set `--slice-count 0` to disable random count sampling and use `--slice-step` instead.
 - `train-prepare` also builds a slice-wise cache database at `training/slice_db/*.npy` and records
   `cache_npy_path` + `cache_index` in the manifest so training can load preprocessed slices directly.
+- The manifest includes `fold_id` for strict fold-aware retraining.
+- `--seed` controls deterministic slice sampling, subject splitting, and fold assignment.
+- `--cv-folds` sets how many folds are assigned in the manifest (typically match ensemble checkpoint count).
 
 ### 8) Transfer-learn from base model weights (PyTorch)
 
@@ -182,8 +187,14 @@ motionscore train \
   --model-root ~/.motionscore/MotionScore/models \
   --init-model-id base-v1 \
   --early-stopping-patience 10 \
+  --seed 13 \
   --output-model-dir ~/.motionscore/MotionScore/models/knee-v1
 ```
+
+Fold-aware retraining behavior:
+- `fold_id` is required in the manifest.
+- For ensemble model `i`: `test` fold = `i`, `val` fold = `(i+1) mod k`, and training uses all remaining folds.
+- Training fails fast if fold metadata is missing/invalid or if fold-derived train/val/test subsets are empty.
 
 Training writes:
 - `training_metrics.json`

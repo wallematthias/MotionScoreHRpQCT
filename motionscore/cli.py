@@ -622,6 +622,7 @@ def _cmd_train_prepare(args: argparse.Namespace) -> int:
         train_ratio=float(args.train_ratio),
         val_ratio=float(args.val_ratio),
         test_ratio=float(args.test_ratio),
+        cv_folds=int(args.cv_folds),
         scaling=args.scaling,
     )
     print(
@@ -941,6 +942,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     train_prepare.add_argument("--include-auto-without-manual", action="store_true", default=False)
     train_prepare.add_argument("--seed", type=int, default=13)
+    train_prepare.add_argument("--cv-folds", type=int, default=10)
     train_prepare.add_argument("--train-ratio", type=float, default=0.70)
     train_prepare.add_argument("--val-ratio", type=float, default=0.15)
     train_prepare.add_argument("--test-ratio", type=float, default=0.15)
