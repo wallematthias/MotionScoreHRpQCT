@@ -215,7 +215,14 @@ def _write_training_plot_png(points: list[dict[str, Any]], output_path: Path, *,
 
     # Stage transition markers.
     last_stage = str(points[0].get("stage", "")).strip()
+    last_model_index = int(points[0].get("model_index", 0))
     for p in points[1:]:
+        model_index = int(p.get("model_index", last_model_index))
+        if model_index != last_model_index:
+            xv = _x_to_px(float(max(1, int(p.get("x", 1)))))
+            draw.line([(xv, plot_top), (xv, plot_bottom)], fill=(110, 110, 110), width=2)
+            draw.text((xv + 4, plot_bottom - 18), f"model {model_index}", fill=(80, 80, 80))
+            last_model_index = model_index
         stage = str(p.get("stage", "")).strip()
         if stage != last_stage:
             xv = _x_to_px(float(max(1, int(p.get("x", 1)))))
@@ -544,6 +551,19 @@ def _checkpoint_state_dict(model_path: Path, *, map_location: str = "cpu") -> di
     return state
 
 
+def _evaluate_checkpoint(
+    *,
+    checkpoint_path: Path,
+    data_loader,
+    device: str,
+) -> dict[str, Any]:
+    model = build_torch_model()
+    state = _checkpoint_state_dict(checkpoint_path, map_location="cpu")
+    model.load_state_dict(state, strict=True)
+    model.to(device)
+    return _run_epoch(model, data_loader, device=device, optimizer=None)
+
+
 def _train_one_model(
     *,
     checkpoint_path: Path,
@@ -814,7 +834,13 @@ def run_transfer_learning(cfg: TrainConfig) -> dict[str, Any]:
     per_model: list[dict[str, Any]] = []
     combined_plot_points: list[dict[str, Any]] = []
     combined_x = 0
+    base_test_metrics: list[dict[str, Any]] = []
     for model_index, init_path in enumerate(init_paths):
+        base_test = _evaluate_checkpoint(
+            checkpoint_path=init_path,
+            data_loader=test_loader,
+            device=device,
+        )
         out_path, train_report = _train_one_model(
             checkpoint_path=init_path,
             model_index=model_index,
@@ -829,7 +855,12 @@ def run_transfer_learning(cfg: TrainConfig) -> dict[str, Any]:
         model.load_state_dict(model_state, strict=True)
         model.to(device)
         test_metrics = _run_epoch(model, test_loader, device=device, optimizer=None)
+        train_report["base_test"] = base_test
         train_report["test"] = test_metrics
+        train_report["test_improvement"] = {
+            "accuracy": float(test_metrics.get("accuracy", 0.0)) - float(base_test.get("accuracy", 0.0)),
+            "weighted_kappa": float(test_metrics.get("weighted_kappa", 0.0)) - float(base_test.get("weighted_kappa", 0.0)),
+        }
         local_points = list(train_report.get("plot_points", []))
         for row in local_points:
             combined_x += 1
@@ -848,7 +879,13 @@ def run_transfer_learning(cfg: TrainConfig) -> dict[str, Any]:
             cfg.output_model_dir / "training_plot_live.png",
             title="Training Progress | all models",
         )
+        base_test_metrics.append(base_test)
         per_model.append(train_report)
+
+    base_mean_acc = sum(float(m.get("accuracy", 0.0)) for m in base_test_metrics) / float(len(base_test_metrics))
+    base_mean_kappa = sum(float(m.get("weighted_kappa", 0.0)) for m in base_test_metrics) / float(len(base_test_metrics))
+    retrained_mean_acc = sum(float(m.get("test", {}).get("accuracy", 0.0)) for m in per_model) / float(len(per_model))
+    retrained_mean_kappa = sum(float(m.get("test", {}).get("weighted_kappa", 0.0)) for m in per_model) / float(len(per_model))
 
     summary = {
         "manifest_path": str(cfg.manifest_path.resolve()),
@@ -876,6 +913,18 @@ def run_transfer_learning(cfg: TrainConfig) -> dict[str, Any]:
         "label_counts": {
             str(k): int(v)
             for k, v in sorted(Counter([_as_int(r.get("label"), default=0) for r in rows]).items())
+        },
+        "base_model_test": {
+            "accuracy": float(base_mean_acc),
+            "weighted_kappa": float(base_mean_kappa),
+        },
+        "retrained_model_test": {
+            "accuracy": float(retrained_mean_acc),
+            "weighted_kappa": float(retrained_mean_kappa),
+        },
+        "test_improvement": {
+            "accuracy": float(retrained_mean_acc - base_mean_acc),
+            "weighted_kappa": float(retrained_mean_kappa - base_mean_kappa),
         },
         "training_plot_live_path": str((cfg.output_model_dir / "training_plot_live.png").resolve()),
         "training_plot_path": str((cfg.output_model_dir / "training_plot.png").resolve()),

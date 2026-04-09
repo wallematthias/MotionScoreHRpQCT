@@ -29,6 +29,8 @@ TRAIN_MANIFEST_FIELDS = [
     "cache_index",
 ]
 
+AUTO_CONFIDENCE_EPSILON = 1e-6
+
 
 def _to_int(text: str | int | float | None, default: int = 0) -> int:
     if text is None:
@@ -74,6 +76,66 @@ def _subject_split(subject_id: str, seed: int, train_ratio: float, val_ratio: fl
     return "test"
 
 
+def _assign_subject_splits(
+    subject_ids: list[str],
+    *,
+    seed: int,
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+) -> dict[str, str]:
+    subjects = [str(sid).strip() for sid in subject_ids if str(sid).strip()]
+    n = len(subjects)
+    if n <= 0:
+        return {}
+    if n == 1:
+        return {subjects[0]: "train"}
+    if n == 2:
+        ranked = sorted(
+            subjects,
+            key=lambda sid: hashlib.sha1(f"{seed}:{sid}".encode("utf-8")).hexdigest(),
+        )
+        return {ranked[0]: "train", ranked[1]: "test"}
+
+    ranked = sorted(
+        subjects,
+        key=lambda sid: hashlib.sha1(f"{seed}:{sid}".encode("utf-8")).hexdigest(),
+    )
+    desired = [float(train_ratio) * n, float(val_ratio) * n, float(test_ratio) * n]
+    counts = [int(np.floor(value)) for value in desired]
+    remainder = int(n - sum(counts))
+    fractions = [desired[i] - counts[i] for i in range(3)]
+    for idx in sorted(range(3), key=lambda i: fractions[i], reverse=True)[:remainder]:
+        counts[idx] += 1
+
+    for idx in range(3):
+        if counts[idx] > 0:
+            continue
+        donor = max(range(3), key=lambda j: counts[j])
+        if counts[donor] <= 1:
+            continue
+        counts[donor] -= 1
+        counts[idx] += 1
+
+    while sum(counts) > n:
+        donor = max(range(3), key=lambda j: counts[j])
+        if counts[donor] <= 1:
+            break
+        counts[donor] -= 1
+    while sum(counts) < n:
+        receiver = max(range(3), key=lambda j: desired[j] - counts[j])
+        counts[receiver] += 1
+
+    labels = ["train", "val", "test"]
+    out: dict[str, str] = {}
+    offset = 0
+    for label, count in zip(labels, counts):
+        for sid in ranked[offset:offset + count]:
+            out[sid] = label
+        offset += count
+    return out
+
+
 def _slice_indices_for_scan(
     depth: int,
     *,
@@ -105,6 +167,36 @@ def _slice_indices_for_scan(
 
     step = int(max(1, slice_step))
     return list(range(0, n, step))
+
+
+def _sample_candidate_positions(
+    n_candidates: int,
+    *,
+    slice_count: int,
+    seed: int,
+    scan_id: str,
+) -> list[int]:
+    n = int(max(0, n_candidates))
+    if n <= 0:
+        return []
+    count = int(max(0, slice_count))
+    if count <= 0:
+        return list(range(n))
+    k = int(min(n, count))
+    key = f"{int(seed)}:{str(scan_id).strip()}".encode("utf-8")
+    seed_u32 = int(hashlib.sha1(key).hexdigest()[:8], 16)
+    rng = np.random.default_rng(seed_u32)
+    edges = np.linspace(0, n, num=(k + 1), dtype=np.int64)
+    out: list[int] = []
+    for i in range(k):
+        lo = int(edges[i])
+        hi = int(edges[i + 1])
+        if hi <= lo:
+            hi = lo + 1
+        pos = int(rng.integers(lo, hi))
+        pos = int(max(0, min(n - 1, pos)))
+        out.append(pos)
+    return sorted(set(out))
 
 
 def _infer_depth_from_raw(raw_image_path: Path, scaling: str = "native") -> int:
@@ -209,10 +301,13 @@ def build_training_manifest(
         raise FileNotFoundError(f"No index.tsv found in {derivatives_root}")
 
     subject_ids = sorted({str(row.get("subject_id", "")).strip() or str(row.get("scan_id", "")).strip() for row in index_rows})
-    split_by_subject = {
-        sid: _subject_split(sid, seed=seed, train_ratio=train_ratio, val_ratio=val_ratio)
-        for sid in subject_ids
-    }
+    split_by_subject = _assign_subject_splits(
+        subject_ids,
+        seed=seed,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+    )
 
     out_rows: list[dict[str, str]] = []
     manual_rows = 0
@@ -292,22 +387,34 @@ def build_training_manifest(
             continue
 
         n = len(slice_grades)
-        sample_indices = _slice_indices_for_scan(
-            n,
-            slice_step=step,
-            slice_count=int(slice_count),
-            seed=int(seed),
-            scan_id=scan_id,
-        )
-        for z in sample_indices:
+        eligible_auto: list[tuple[int, int, float]] = []
+        for z in range(n):
             label = _to_int(slice_grades[z], default=0)
             if label < 1 or label > 5:
                 continue
             conf_unit = _confidence_as_unit_interval(slice_conf[z] if z < len(slice_conf) else -1)
             if not np.isfinite(conf_unit) or conf_unit < 0.0:
                 continue
-            if conf_unit < float(min_auto_confidence):
+            if conf_unit + AUTO_CONFIDENCE_EPSILON < float(min_auto_confidence):
                 continue
+            eligible_auto.append((z, label, float(conf_unit)))
+
+        if not eligible_auto:
+            skipped_scans += 1
+            continue
+
+        if int(slice_count) > 0:
+            candidate_positions = _sample_candidate_positions(
+                len(eligible_auto),
+                slice_count=int(slice_count),
+                seed=int(seed),
+                scan_id=scan_id,
+            )
+            chosen_auto = [eligible_auto[pos] for pos in candidate_positions]
+        else:
+            chosen_auto = eligible_auto[::step]
+
+        for z, label, conf_unit in chosen_auto:
             out_rows.append(
                 {
                     "scan_id": scan_id,

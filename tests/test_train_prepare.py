@@ -229,3 +229,188 @@ def test_build_training_manifest_slice_count_is_seeded_and_randomized(
     assert len(z_a) == 8
     assert z_a == z_b
     assert z_c != z_a
+
+
+def test_build_training_manifest_auto_slice_count_targets_kept_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    derivatives = tmp_path / "MotionScore"
+    derivatives.mkdir(parents=True)
+    monkeypatch.setattr(
+        prepare_module,
+        "read_aim",
+        lambda _path, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 32), dtype=np.float32)),
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "preprocess_slice",
+        lambda arr: (np.asarray(arr, dtype=np.uint8), {}),
+    )
+
+    slice_grades = "[" + ",".join(["3"] * 32) + "]"
+    slice_conf = "[" + ",".join(["0.95"] * 16 + ["0.40"] * 16) + "]"
+    _write_scan_tables(
+        derivatives,
+        rel_base="sub-S1/site-tibia/ses-T1",
+        scan_id="scan_auto_only",
+        subject_id="S1",
+        manual_grade="",
+        slice_grades=slice_grades,
+        slice_conf=slice_conf,
+    )
+    write_tsv(
+        derivatives / "index.tsv",
+        [
+            {
+                "scan_id": "scan_auto_only",
+                "subject_id": "S1",
+                "raw_image_path": "/tmp/scan_auto_only.AIM",
+                "predictions_tsv": "sub-S1/site-tibia/ses-T1/predictions/predictions.tsv",
+                "review_tsv": "sub-S1/site-tibia/ses-T1/review/review.tsv",
+            },
+        ],
+        ["scan_id", "subject_id", "raw_image_path", "predictions_tsv", "review_tsv"],
+    )
+
+    out_path = derivatives / "training" / "auto_manifest.tsv"
+    stats = build_training_manifest(
+        derivatives_root=derivatives,
+        output_path=out_path,
+        min_auto_confidence=0.75,
+        slice_step=1,
+        slice_count=8,
+        include_auto_without_manual=True,
+        seed=13,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+    )
+
+    rows = read_tsv(out_path)
+    assert len(rows) == 8
+    assert stats["rows_auto"] == 8
+    assert all(r["label_source"] == "auto_slice" for r in rows)
+    assert all(float(r["auto_slice_confidence"]) >= 0.75 for r in rows)
+
+
+def test_build_training_manifest_auto_threshold_tolerates_float_rounding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    derivatives = tmp_path / "MotionScore"
+    derivatives.mkdir(parents=True)
+    monkeypatch.setattr(
+        prepare_module,
+        "read_aim",
+        lambda _path, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 8), dtype=np.float32)),
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "preprocess_slice",
+        lambda arr: (np.asarray(arr, dtype=np.uint8), {}),
+    )
+
+    _write_scan_tables(
+        derivatives,
+        rel_base="sub-S1/site-tibia/ses-T1",
+        scan_id="scan_rounding",
+        subject_id="S1",
+        manual_grade="",
+        slice_grades="[3,3,3,3]",
+        slice_conf="[0.699999988079071,0.8,0.9,1.0]",
+    )
+    write_tsv(
+        derivatives / "index.tsv",
+        [
+            {
+                "scan_id": "scan_rounding",
+                "subject_id": "S1",
+                "raw_image_path": "/tmp/scan_rounding.AIM",
+                "predictions_tsv": "sub-S1/site-tibia/ses-T1/predictions/predictions.tsv",
+                "review_tsv": "sub-S1/site-tibia/ses-T1/review/review.tsv",
+            },
+        ],
+        ["scan_id", "subject_id", "raw_image_path", "predictions_tsv", "review_tsv"],
+    )
+
+    out_path = derivatives / "training" / "rounding_manifest.tsv"
+    stats = build_training_manifest(
+        derivatives_root=derivatives,
+        output_path=out_path,
+        min_auto_confidence=0.7,
+        slice_step=1,
+        slice_count=4,
+        include_auto_without_manual=True,
+        seed=13,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+    )
+
+    rows = read_tsv(out_path)
+    assert len(rows) == 4
+    assert stats["rows_auto"] == 4
+
+
+def test_build_training_manifest_keeps_val_split_non_empty_when_possible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    derivatives = tmp_path / "MotionScore"
+    derivatives.mkdir(parents=True)
+    monkeypatch.setattr(
+        prepare_module,
+        "read_aim",
+        lambda _path, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 8), dtype=np.float32)),
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "preprocess_slice",
+        lambda arr: (np.asarray(arr, dtype=np.uint8), {}),
+    )
+
+    index_rows = []
+    for idx in range(17):
+        subject_id = f"S{idx:02d}"
+        scan_id = f"scan_{idx:02d}"
+        rel_base = f"sub-{subject_id}/site-tibia/ses-T1"
+        _write_scan_tables(
+            derivatives,
+            rel_base=rel_base,
+            scan_id=scan_id,
+            subject_id=subject_id,
+            manual_grade="4",
+            slice_grades="[3,3,3,3]",
+            slice_conf="[0.9,0.9,0.9,0.9]",
+        )
+        index_rows.append(
+            {
+                "scan_id": scan_id,
+                "subject_id": subject_id,
+                "raw_image_path": f"/tmp/{scan_id}.AIM",
+                "predictions_tsv": f"{rel_base}/predictions/predictions.tsv",
+                "review_tsv": f"{rel_base}/review/review.tsv",
+            }
+        )
+
+    write_tsv(
+        derivatives / "index.tsv",
+        index_rows,
+        ["scan_id", "subject_id", "raw_image_path", "predictions_tsv", "review_tsv"],
+    )
+
+    out_path = derivatives / "training" / "split_manifest.tsv"
+    stats = build_training_manifest(
+        derivatives_root=derivatives,
+        output_path=out_path,
+        min_auto_confidence=0.75,
+        slice_step=1,
+        slice_count=4,
+        include_auto_without_manual=False,
+        seed=13,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+    )
+
+    assert stats["split_train"] > 0
+    assert stats["split_val"] > 0
+    assert stats["split_test"] > 0
