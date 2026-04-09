@@ -23,6 +23,19 @@ def test_discover_flat_layout(tmp_path: Path) -> None:
     assert sessions[0].output_rel_dir == Path("SUB001_DT_T1")
 
 
+def test_discover_plain_aim_filename_fallback(tmp_path: Path) -> None:
+    root = tmp_path / "plain"
+    root.mkdir(parents=True, exist_ok=True)
+    _touch(root / "scan01.AIM")
+
+    sessions = discover_raw_sessions(root, DiscoveryConfig())
+    assert len(sessions) == 1
+    assert sessions[0].subject_id == "scan01"
+    assert sessions[0].site == "tibia"
+    assert sessions[0].session_id == "T1"
+    assert sessions[0].output_rel_dir == Path("scan01")
+
+
 def test_discover_nested_bids_layout(tmp_path: Path) -> None:
     image = tmp_path / "sub-001" / "ses-T2" / "anat" / "SUB001_DT_T2.AIM"
     image.parent.mkdir(parents=True, exist_ok=True)

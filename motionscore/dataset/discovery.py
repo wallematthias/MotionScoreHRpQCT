@@ -144,6 +144,17 @@ def _extract_default(path: Path, cfg: DiscoveryConfig) -> tuple[str, str, str, i
     return subject, session, site, stack_index, role
 
 
+def _extract_plain_fallback(path: Path, cfg: DiscoveryConfig) -> tuple[str, str, str, int | None, str]:
+    stem = _strip_aim_suffix(path.name)
+    stack_index = _extract_stack_index(path)
+    stem = re.sub(r"(?i)_STACK[_-]?\d+", "", stem)
+    subject = stem.strip().strip("_")
+    if not subject:
+        raise ValueError(f"Cannot infer subject from filename: {path.name}")
+    role = _role_from_name(path)
+    return subject, "T1", cfg.default_site.lower(), stack_index, role
+
+
 def _parse_processing_log_to_dict(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for line in raw.splitlines():
@@ -266,7 +277,10 @@ def discover_raw_sessions(
                     try:
                         subject, session, site, stack_index, role = _extract_default(path, cfg)
                     except ValueError:
-                        subject, session, site, stack_index, role = _extract_from_header(path, cfg)
+                        try:
+                            subject, session, site, stack_index, role = _extract_from_header(path, cfg)
+                        except ValueError:
+                            subject, session, site, stack_index, role = _extract_plain_fallback(path, cfg)
         except ValueError:
             continue
 
