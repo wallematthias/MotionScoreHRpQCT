@@ -70,93 +70,19 @@ Model weights are licensed for usage tracking. In the current deployment configu
 
 ## CLI Usage
 
-### 1) Discover scans
+For most users, day-to-day grading and review should be done in the Slicer app.
+In this core CLI, the two most useful workflows are batch prediction and retraining.
+
+### 1) Predict a folder of scans
 
 ```bash
-motionscore discover /path/to/dataset
-motionscore discover /path/to/dataset --json
-```
-
-### 2) Run prediction + initialize review tables
-
-```bash
-motionscore predict /path/to/dataset --confidence-threshold 75
-# choose a registered model profile
-motionscore predict /path/to/dataset --model-id base-v1
-# blinded operator training mode
-motionscore predict /path/to/dataset --training-mode
-# optional: restrict to one scan_id (repeat flag for multiple)
-motionscore predict /path/to/dataset --scan-id sub-001_site-tibia_ses-T1_abcdef1234
-# optional quick-look PNG controls
-motionscore predict /path/to/dataset --preview-panels 5
-motionscore predict /path/to/dataset --no-preview-png
+motionscore predict /path/to/dataset --model-id base-v1 --confidence-threshold 75
 ```
 
 Default output root:
+- `/path/to/dataset/derivatives/MotionScore`
 
-```text
-/path/to/dataset/derivatives/MotionScore
-```
-
-Optional custom output root:
-
-```bash
-motionscore predict /path/to/dataset --output-root /tmp/results
-```
-
-### 3) Update review threshold policy
-
-```bash
-motionscore review-init /path/to/dataset/derivatives/MotionScore --confidence-threshold 90
-# keep/enable blinded operator training mode
-motionscore review-init /path/to/dataset/derivatives/MotionScore --training-mode
-```
-
-`--confidence-threshold 100` effectively requires review of all scans.
-When `--training-mode` is enabled, pending scans are always operator-first and AI prediction is revealed after manual grading.
-
-### 4) Apply manual review decision for one scan
-
-```bash
-motionscore review-apply /path/to/dataset/derivatives/MotionScore \
-  --scan-id sub-001_site-tibia_ses-T1_abcdef1234 \
-  --manual-grade 3 \
-  --reviewer mwalle
-```
-
-### 4b) Clear manual grades for re-review
-
-```bash
-# clear one operator across all scans
-motionscore review-clear /path/to/dataset/derivatives/MotionScore --reviewer opA
-
-# clear everyone
-motionscore review-clear /path/to/dataset/derivatives/MotionScore --all-reviewers
-```
-
-### 5) Generate on-demand Grad-CAM attention map
-
-```bash
-motionscore explain /path/to/dataset/derivatives/MotionScore \
-  --scan-id sub-001_site-tibia_ses-T1_abcdef1234
-```
-
-### 6) Export final grade table
-
-```bash
-motionscore export /path/to/dataset/derivatives/MotionScore
-```
-
-Writes `motion_grades.tsv` at the derivatives root (or custom `--output`).
-Export includes current per-scan review state plus machine-readable multi-reviewer summary columns:
-- `reviewer_count`
-- `reviewers` (pipe-delimited reviewer IDs)
-- `consensus_method` (currently `mean_manual_grade`)
-- `consensus_mean_manual_grade`
-- `consensus_grade_rounded`
-- dynamic reviewer slots: `reviewer_1_id`, `reviewer_1_grade`, `reviewer_2_id`, `reviewer_2_grade`, ...
-
-### 7) Prepare slice-level retraining manifest (manual labels take priority)
+### 2) Retrain from reviewed data
 
 ```bash
 motionscore train-prepare /path/to/dataset/derivatives/MotionScore \
@@ -166,22 +92,7 @@ motionscore train-prepare /path/to/dataset/derivatives/MotionScore \
   --cv-folds 10 \
   --min-auto-confidence 0.70 \
   --include-auto-without-manual
-```
 
-Training label policy:
-- If a manual scan grade exists, it is treated as ground truth and propagated to all slices.
-- If no manual grade exists, per-slice auto labels are used (confidence-filtered).
-- `--slice-count 8` samples eight randomized, spread-out slices per scan (seeded, reproducible).
-- Set `--slice-count 0` to disable random count sampling and use `--slice-step` instead.
-- `train-prepare` also builds a slice-wise cache database at `training/slice_db/*.npy` and records
-  `cache_npy_path` + `cache_index` in the manifest so training can load preprocessed slices directly.
-- The manifest includes `fold_id` for strict fold-aware retraining.
-- `--seed` controls deterministic slice sampling, subject splitting, and fold assignment.
-- `--cv-folds` sets how many folds are assigned in the manifest (typically match ensemble checkpoint count).
-
-### 8) Transfer-learn from base model weights (PyTorch)
-
-```bash
 motionscore train \
   --manifest /path/to/dataset/derivatives/MotionScore/training/train_manifest.tsv \
   --model-root ~/.motionscore/MotionScore/models \
@@ -191,43 +102,23 @@ motionscore train \
   --output-model-dir ~/.motionscore/MotionScore/models/knee-v1
 ```
 
-Fold-aware retraining behavior:
-- `fold_id` is required in the manifest.
-- For ensemble model `i`: `test` fold = `i`, `val` fold = `(i+1) mod k`, and training uses all remaining folds.
-- Training fails fast if fold metadata is missing/invalid or if fold-derived train/val/test subsets are empty.
-
 Training writes:
 - `training_metrics.json`
 - `training_plot_live.png` (updated every epoch)
 - `training_plot.png` (final summary plot)
 - `training_plot_model_<n>.png` (per-ensemble-model curves)
 
-### 9) Register and select custom model profiles
+### CLI Reference
 
-```bash
-motionscore model-register \
-  --model-root ~/.motionscore/MotionScore/models \
-  --model-id knee-v1 \
-  --model-dir ~/.motionscore/MotionScore/models/knee-v1 \
-  --display-name "Knee Transfer v1" \
-  --domain knee \
-  --version v1
+For all advanced/headless commands (`discover`, `review-*`, `export`, `explain`, `model-*`), see:
+- [CLI_REFERENCE.md](CLI_REFERENCE.md)
 
-motionscore model-list --model-root ~/.motionscore/MotionScore/models
-```
+## Use With 3D Slicer
 
-## Slicer Integration Contract
-
-This repository is core logic only. A separate Slicer extension should:
-
-1. run `motionscore predict ...` from a `Run` button,
-2. run `motionscore review-apply ...` as reviewers step through scans,
-3. request `motionscore explain ...` on demand to overlay Grad-CAM maps,
-4. optionally show `preview/*_preview.png` for quick QC,
-5. load all outputs from derivatives without ad hoc state files.
-
-Reference Slicer repository:
+For day-to-day grading and retraining, use the Slicer app:
 - https://github.com/wallematthias/SlicerMotionScoreHRpQCT
+
+This repository provides the core CLI/pipeline used by that extension.
 
 ## Citation
 
