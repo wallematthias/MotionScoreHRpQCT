@@ -76,11 +76,13 @@ In this core CLI, the two most useful workflows are batch prediction and retrain
 ### 1) Predict a folder of scans
 
 ```bash
-motionscore predict /path/to/dataset --model-id base-v1 --confidence-threshold 75
+motionscore predict /path/to/dataset --model-id base-v1
 ```
 
 Default output root:
 - `/path/to/dataset/derivatives/MotionScore`
+
+Review confidence policy is configured separately with `motionscore review-init --confidence-threshold ...`.
 
 ### 2) Retrain from reviewed data
 

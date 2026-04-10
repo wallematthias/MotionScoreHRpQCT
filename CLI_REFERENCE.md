@@ -33,6 +33,7 @@ motionscore train --help
 
 ## Notes
 
+- `--confidence-threshold` is a review policy setting (`review-init`), not required for pure prediction.
 - Retraining is strict fold-aware (`fold_id` required in the manifest).
 - Use `--seed` for deterministic sampling/splitting behavior.
 - Use `--cv-folds` in `train-prepare` to match ensemble checkpoint count.
