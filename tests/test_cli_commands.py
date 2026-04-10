@@ -439,3 +439,168 @@ def test_main_wraps_runtime_errors(monkeypatch: pytest.MonkeyPatch, capsys: pyte
         cli.main()
     assert exc.value.code == 2
     assert "[motionscore] error: boom" in capsys.readouterr().err
+
+
+def test_cmd_train_prepare_passes_cv_folds_and_seed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, object] = {}
+
+    def _fake_build_training_manifest(**kwargs):
+        calls.update(kwargs)
+        return {
+            "rows_written": 12,
+            "rows_manual": 8,
+            "rows_auto": 4,
+            "split_train": 8,
+            "split_val": 2,
+            "split_test": 2,
+            "cache_scans": 3,
+            "cache_slices": 12,
+        }
+
+    monkeypatch.setattr(cli, "build_training_manifest", _fake_build_training_manifest)
+    monkeypatch.setattr(cli, "_normalize_derivatives_root", lambda p: p)
+
+    args = argparse.Namespace(
+        derivatives_root=tmp_path,
+        output=None,
+        min_auto_confidence=0.75,
+        slice_step=2,
+        slice_count=6,
+        include_auto_without_manual=True,
+        seed=31,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+        cv_folds=10,
+        scaling="native",
+    )
+    assert cli._cmd_train_prepare(args) == 0
+    assert int(calls["seed"]) == 31
+    assert int(calls["cv_folds"]) == 10
+    assert Path(calls["output_path"]).name == "train_manifest.tsv"
+    assert "split(train/val/test)=8/2/2" in capsys.readouterr().out
+
+
+def test_cmd_train_resolves_model_and_runs_training(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    init_dir = tmp_path / "models" / "base-v1"
+    init_dir.mkdir(parents=True)
+    manifest = tmp_path / "train_manifest.tsv"
+    manifest.write_text("scan_id\tsubject_id\traw_image_path\tslice_index\tlabel\tsplit\tfold_id\n", encoding="utf-8")
+    out_dir = tmp_path / "out_model"
+
+    monkeypatch.setattr(cli, "_resolve_model_root", lambda _p: tmp_path / "models")
+    monkeypatch.setattr(cli, "resolve_model_dir", lambda model_root, model_id: (init_dir, {"model_id": "base-v1"}))
+
+    captured_cfg = {}
+
+    def _fake_run_transfer_learning(cfg):
+        captured_cfg["cfg"] = cfg
+        return {"models": [{}], "n_rows": 42}
+
+    monkeypatch.setattr(cli, "run_transfer_learning", _fake_run_transfer_learning)
+
+    args = argparse.Namespace(
+        manifest=manifest,
+        output_model_dir=out_dir,
+        init_model_dir=None,
+        model_root=None,
+        init_model_id="base-v1",
+        device="cpu",
+        scaling="native",
+        batch_size=12,
+        epochs_head=20,
+        epochs_finetune=30,
+        lr_head=1e-3,
+        lr_finetune=1e-4,
+        early_stopping_patience=10,
+        early_stopping_min_delta=1e-4,
+        aug_hflip=True,
+        aug_vflip=True,
+        aug_rotate=False,
+        aug_crop=False,
+        max_cache_scans=64,
+        num_workers=0,
+        seed=13,
+    )
+    assert cli._cmd_train(args) == 0
+    cfg = captured_cfg["cfg"]
+    assert Path(cfg.init_model_dir) == init_dir.resolve()
+    assert int(cfg.seed) == 13
+    assert "trained 1 model(s) from base-v1 on 42 slices" in capsys.readouterr().out
+
+
+def test_cmd_import_model_register_and_model_list(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    derivatives = tmp_path / "MotionScore"
+    derivatives.mkdir(parents=True)
+    model_root = tmp_path / "models"
+    model_root.mkdir(parents=True)
+    model_dir = model_root / "custom-v1"
+    model_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(cli, "_normalize_derivatives_root", lambda p: p)
+    monkeypatch.setattr(cli, "_read_index", lambda _d: [{"scan_id": "scan_1"}])
+    monkeypatch.setattr(
+        cli,
+        "import_final_grades",
+        lambda **_kwargs: {"imported": 3, "skipped_existing": 1, "missing_scan": 0},
+    )
+    monkeypatch.setattr(cli, "_resolve_model_root", lambda _p: model_root)
+    monkeypatch.setattr(
+        cli,
+        "register_model_profile",
+        lambda **_kwargs: (model_root / "model_registry.json", {"model_id": "custom-v1", "checkpoint_count": 10}),
+    )
+    monkeypatch.setattr(cli, "get_registry_path", lambda _m: model_root / "model_registry.json")
+    monkeypatch.setattr(
+        cli,
+        "list_model_profiles",
+        lambda _m: [{"model_id": "custom-v1", "version": "v1", "display_name": "Custom v1", "relative_dir": "custom-v1"}],
+    )
+
+    import_args = argparse.Namespace(
+        derivatives_root=derivatives,
+        input=tmp_path / "grades.tsv",
+        reviewer="qa",
+    )
+    assert cli._cmd_import_final_grades(import_args) == 0
+    out = capsys.readouterr().out
+    assert "imported=3 skipped_existing=1 missing_scan=0" in out
+
+    reg_args = argparse.Namespace(
+        model_root=None,
+        model_id="custom-v1",
+        model_dir=model_dir,
+        display_name="Custom v1",
+        domain="custom",
+        version="v1",
+        description="",
+        source_model_id="base-v1",
+        training_manifest="",
+        metrics_path="",
+        make_default=True,
+    )
+    assert cli._cmd_model_register(reg_args) == 0
+    out = capsys.readouterr().out
+    assert "model_id=custom-v1 checkpoints=10 default=yes" in out
+
+    list_args_json = argparse.Namespace(model_root=None, as_json=True)
+    assert cli._cmd_model_list(list_args_json) == 0
+    out_json = capsys.readouterr().out
+    assert '"model_id": "custom-v1"' in out_json
+
+    list_args_txt = argparse.Namespace(model_root=None, as_json=False)
+    assert cli._cmd_model_list(list_args_txt) == 0
+    out_txt = capsys.readouterr().out
+    assert "discovered 1 model profile(s)" in out_txt

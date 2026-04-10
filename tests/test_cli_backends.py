@@ -133,12 +133,23 @@ def test_import_final_grades_flags() -> None:
 
 def test_train_prepare_and_model_commands_parse() -> None:
     parser = _build_parser()
-    args_prepare = parser.parse_args(["train-prepare", "/tmp/data/derivatives/MotionScore"])
+    args_prepare = parser.parse_args(
+        [
+            "train-prepare",
+            "/tmp/data/derivatives/MotionScore",
+            "--seed",
+            "17",
+            "--cv-folds",
+            "12",
+        ]
+    )
     assert args_prepare.command == "train-prepare"
     assert args_prepare.min_auto_confidence == 0.70
     assert args_prepare.slice_step == 1
     assert args_prepare.slice_count == 8
     assert args_prepare.include_auto_without_manual is False
+    assert args_prepare.seed == 17
+    assert args_prepare.cv_folds == 12
 
     args_train = parser.parse_args(
         [
@@ -147,15 +158,22 @@ def test_train_prepare_and_model_commands_parse() -> None:
             "/tmp/manifest.tsv",
             "--output-model-dir",
             "/tmp/new_model",
+            "--seed",
+            "19",
+            "--no-aug-hflip",
+            "--no-aug-vflip",
+            "--aug-rotate",
+            "--aug-crop",
         ]
     )
     assert args_train.command == "train"
     assert args_train.init_model_id == "base-v1"
     assert args_train.early_stopping_patience == 10
-    assert args_train.aug_hflip is True
-    assert args_train.aug_vflip is True
-    assert args_train.aug_rotate is False
-    assert args_train.aug_crop is False
+    assert args_train.seed == 19
+    assert args_train.aug_hflip is False
+    assert args_train.aug_vflip is False
+    assert args_train.aug_rotate is True
+    assert args_train.aug_crop is True
 
     args_register = parser.parse_args(
         [
