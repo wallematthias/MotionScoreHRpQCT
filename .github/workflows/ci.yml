@@ -133,6 +133,7 @@ jobs:
       - name: Run coverage
         run: |
           python -m pytest -q \
+            --cov-config=.coveragerc \
             --cov=motionscore \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
