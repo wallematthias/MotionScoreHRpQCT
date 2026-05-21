@@ -66,22 +66,14 @@ Each registered profile points to a directory containing torch checkpoints:
 - `DNN_0.pt`, `DNN_1.pt`, ... (ensemble members)
 - `model_registry.json` at the model root
 
-Model weights use self-service registration for durable usage tracking. Users generate a local registration key, optionally submit the generated tracking URL, and then download public model bundles without waiting for a manually issued license.
+Model weights are distributed as public GitHub release assets. The download command reads the public model catalog, downloads the selected bundle, verifies the checksum when present, and registers the extracted checkpoints locally.
 
 ```bash
-motionscore license-register \
-  --name "Jane Doe" \
-  --institution "UCSF" \
-  --email "jane@example.edu" \
-  --group "Bone Lab" \
-  --intended-use "HR-pQCT motion scoring" \
-  --open-tracking-url
-
 motionscore model-download --model-id base-v1
 motionscore model-list
 ```
 
-By default the registration JSON is written to `~/.motionscore/MotionScore/license.json`, local usage events are appended to `~/.motionscore/MotionScore/usage_events.tsv`, and model bundles are resolved from the public model catalog attached to the latest GitHub release.
+By default model bundles are resolved from the public model catalog attached to the latest GitHub release, and GitHub release asset download counts are the central usage metric.
 
 ## CLI Usage
 

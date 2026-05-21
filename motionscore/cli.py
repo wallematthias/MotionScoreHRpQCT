@@ -26,15 +26,7 @@ from motionscore.inference.scoring import predict_scan
 from motionscore.io.aim import read_aim
 from motionscore.licensing import (
     DEFAULT_MODEL_CATALOG_URL,
-    DEFAULT_TRACKING_URL,
-    append_usage_event,
-    create_license_record,
-    default_license_path,
-    default_usage_events_path,
     download_and_register_model,
-    open_tracking_submission,
-    read_license_record,
-    write_license_record,
 )
 from motionscore.model_registry import (
     get_registry_path,
@@ -741,60 +733,12 @@ def _cmd_model_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_license_register(args: argparse.Namespace) -> int:
-    record = create_license_record(
-        name=args.name,
-        institution=args.institution,
-        email=args.email,
-        group=args.group,
-        intended_use=args.intended_use,
-        tracking_url=args.tracking_url,
-    )
-    path = write_license_record(record, args.license_path)
-    append_usage_event(
-        event_type="registration",
-        payload={"group": record.group, "intended_use": record.intended_use},
-        license_path=path,
-        events_path=args.events_path,
-    )
-    print(f"[license-register] wrote license: {path}")
-    print(f"[license-register] license_key={record.license_key}")
-    print("[license-register] tracking submission URL:")
-    print(record.tracking_submission_url)
-    if bool(args.open_tracking_url):
-        opened = open_tracking_submission(record)
-        print(f"[license-register] opened tracking URL: {'yes' if opened else 'no'}")
-    return 0
-
-
-def _cmd_license_show(args: argparse.Namespace) -> int:
-    record = read_license_record(args.license_path)
-    payload = dict(record.__dict__)
-    if args.as_json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        print(f"[license-show] license_key={record.license_key}")
-        print(f"[license-show] name={record.name}")
-        print(f"[license-show] institution={record.institution}")
-        print(f"[license-show] email={record.email}")
-        if record.group:
-            print(f"[license-show] group={record.group}")
-        if record.intended_use:
-            print(f"[license-show] intended_use={record.intended_use}")
-        print(f"[license-show] created_at={record.created_at}")
-        if record.tracking_submission_url:
-            print("[license-show] tracking submission URL:")
-            print(record.tracking_submission_url)
-    return 0
-
-
 def _cmd_model_download(args: argparse.Namespace) -> int:
     model_root = _resolve_model_root(args.model_root)
     registry_path, entry = download_and_register_model(
         model_id=args.model_id,
         model_root=model_root,
         catalog_source=args.catalog,
-        license_path=args.license_path,
         overwrite=bool(args.overwrite),
     )
     print(
@@ -804,7 +748,6 @@ def _cmd_model_download(args: argparse.Namespace) -> int:
     )
     print(f"[model-download] model_root: {model_root}")
     print(f"[model-download] registry: {registry_path}")
-    print(f"[model-download] usage events: {default_usage_events_path()}")
     return 0
 
 
@@ -1074,42 +1017,6 @@ def _build_parser() -> argparse.ArgumentParser:
     model_list.add_argument("--model-root", type=Path, default=None)
     model_list.add_argument("--json", dest="as_json", action="store_true")
 
-    license_register = subparsers.add_parser(
-        "license-register",
-        help="Create a self-service MotionScore model-use registration key.",
-    )
-    license_register.add_argument("--name", required=True, help="User name")
-    license_register.add_argument("--institution", required=True, help="Institution or organization")
-    license_register.add_argument("--email", required=True, help="Contact email")
-    license_register.add_argument("--group", default="", help="Lab/group name, PI, or study group")
-    license_register.add_argument("--intended-use", default="", help="Short description of intended model use")
-    license_register.add_argument(
-        "--license-path",
-        type=Path,
-        default=default_license_path(),
-        help="Where to write the local license JSON.",
-    )
-    license_register.add_argument(
-        "--events-path",
-        type=Path,
-        default=default_usage_events_path(),
-        help="Where to append local usage events TSV.",
-    )
-    license_register.add_argument(
-        "--tracking-url",
-        default=DEFAULT_TRACKING_URL,
-        help="Issue/form URL used to submit registration metadata for usage tracking.",
-    )
-    license_register.add_argument(
-        "--open-tracking-url",
-        action="store_true",
-        help="Open the generated tracking URL in the default browser.",
-    )
-
-    license_show = subparsers.add_parser("license-show", help="Show the local MotionScore registration key")
-    license_show.add_argument("--license-path", type=Path, default=default_license_path())
-    license_show.add_argument("--json", dest="as_json", action="store_true")
-
     model_download = subparsers.add_parser(
         "model-download",
         help="Download a public MotionScore model bundle and register it locally.",
@@ -1121,7 +1028,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MODEL_CATALOG_URL,
         help="Model catalog JSON URL or local path.",
     )
-    model_download.add_argument("--license-path", type=Path, default=default_license_path())
     model_download.add_argument("--overwrite", action="store_true")
 
     return parser
@@ -1156,10 +1062,6 @@ def main() -> None:
             raise SystemExit(_cmd_model_register(args))
         if args.command == "model-list":
             raise SystemExit(_cmd_model_list(args))
-        if args.command == "license-register":
-            raise SystemExit(_cmd_license_register(args))
-        if args.command == "license-show":
-            raise SystemExit(_cmd_license_show(args))
         if args.command == "model-download":
             raise SystemExit(_cmd_model_download(args))
 

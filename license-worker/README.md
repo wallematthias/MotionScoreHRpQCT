@@ -1,6 +1,6 @@
 # MotionScore License Worker
 
-Legacy backend reference. The supported default access path is now the self-service CLI workflow documented in [`docs/SELF_SERVICE_MODEL_ACCESS.md`](../docs/SELF_SERVICE_MODEL_ACCESS.md). Use this Worker only if you intentionally want a hosted activation/download service.
+Legacy backend reference. The supported default access path is now public GitHub release assets documented in [`docs/MODEL_ACCESS.md`](../docs/MODEL_ACCESS.md). Use this Worker only if you intentionally want a hosted activation/download service.
 
 Cloudflare Worker backend for:
 

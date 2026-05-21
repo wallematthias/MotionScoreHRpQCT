@@ -8,10 +8,7 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
-import uuid
-import webbrowser
 import zipfile
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,156 +16,9 @@ from typing import Any
 from motionscore.model_registry import register_model_profile
 
 
-DEFAULT_TRACKING_URL = "https://github.com/wallematthias/MotionScoreHRpQCT/issues/new"
 DEFAULT_MODEL_CATALOG_URL = (
     "https://github.com/wallematthias/MotionScoreHRpQCT/releases/latest/download/model_catalog.json"
 )
-LICENSE_FILENAME = "license.json"
-USAGE_EVENTS_FILENAME = "usage_events.tsv"
-
-
-@dataclass(frozen=True)
-class LicenseRecord:
-    license_key: str
-    name: str
-    institution: str
-    email: str
-    group: str
-    intended_use: str
-    created_at: str
-    tracking_url: str
-    tracking_submission_url: str
-
-
-def default_state_root() -> Path:
-    return (Path.home() / ".motionscore" / "MotionScore").resolve()
-
-
-def default_license_path() -> Path:
-    return default_state_root() / LICENSE_FILENAME
-
-
-def default_usage_events_path() -> Path:
-    return default_state_root() / USAGE_EVENTS_FILENAME
-
-
-def create_license_record(
-    *,
-    name: str,
-    institution: str,
-    email: str,
-    group: str = "",
-    intended_use: str = "",
-    tracking_url: str = DEFAULT_TRACKING_URL,
-    created_at: str | None = None,
-    license_key: str | None = None,
-) -> LicenseRecord:
-    clean_name = _require_text(name, "name")
-    clean_institution = _require_text(institution, "institution")
-    clean_email = _require_text(email, "email").lower()
-    now = created_at or datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    key = license_key or _generate_license_key(clean_name, clean_institution, clean_email, now)
-    payload = {
-        "license_key": key,
-        "name": clean_name,
-        "institution": clean_institution,
-        "email": clean_email,
-        "group": str(group or "").strip(),
-        "intended_use": str(intended_use or "").strip(),
-        "created_at": now,
-    }
-    submission_url = build_tracking_submission_url(tracking_url=tracking_url, payload=payload)
-    return LicenseRecord(
-        license_key=key,
-        name=clean_name,
-        institution=clean_institution,
-        email=clean_email,
-        group=payload["group"],
-        intended_use=payload["intended_use"],
-        created_at=now,
-        tracking_url=tracking_url,
-        tracking_submission_url=submission_url,
-    )
-
-
-def write_license_record(record: LicenseRecord, path: str | Path | None = None) -> Path:
-    out = Path(path).expanduser().resolve() if path is not None else default_license_path()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(record.__dict__, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return out
-
-
-def read_license_record(path: str | Path | None = None) -> LicenseRecord:
-    license_path = Path(path).expanduser().resolve() if path is not None else default_license_path()
-    payload = json.loads(license_path.read_text(encoding="utf-8"))
-    return LicenseRecord(
-        license_key=_require_text(payload.get("license_key"), "license_key"),
-        name=_require_text(payload.get("name"), "name"),
-        institution=_require_text(payload.get("institution"), "institution"),
-        email=_require_text(payload.get("email"), "email"),
-        group=str(payload.get("group", "") or ""),
-        intended_use=str(payload.get("intended_use", "") or ""),
-        created_at=_require_text(payload.get("created_at"), "created_at"),
-        tracking_url=str(payload.get("tracking_url", "") or DEFAULT_TRACKING_URL),
-        tracking_submission_url=str(payload.get("tracking_submission_url", "") or ""),
-    )
-
-
-def build_tracking_submission_url(*, tracking_url: str, payload: dict[str, Any]) -> str:
-    base = str(tracking_url or "").strip() or DEFAULT_TRACKING_URL
-    body = "\n".join(
-        [
-            "MotionScoreHRpQCT model registration",
-            "",
-            f"- Name: {payload.get('name', '')}",
-            f"- Institution: {payload.get('institution', '')}",
-            f"- Group: {payload.get('group', '')}",
-            f"- Email: {payload.get('email', '')}",
-            f"- Intended use: {payload.get('intended_use', '')}",
-            f"- License key: `{payload.get('license_key', '')}`",
-            f"- Created at: {payload.get('created_at', '')}",
-        ]
-    )
-    query = {
-        "title": f"MotionScore registration: {payload.get('institution', '')}",
-        "body": body,
-    }
-    separator = "&" if "?" in base else "?"
-    return base + separator + urllib.parse.urlencode(query)
-
-
-def append_usage_event(
-    *,
-    event_type: str,
-    payload: dict[str, Any] | None = None,
-    license_path: str | Path | None = None,
-    events_path: str | Path | None = None,
-) -> Path:
-    record = read_license_record(license_path)
-    out = Path(events_path).expanduser().resolve() if events_path is not None else default_usage_events_path()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not out.exists()
-    event_payload = json.dumps(payload or {}, sort_keys=True, separators=(",", ":"))
-    with out.open("a", encoding="utf-8") as f:
-        if write_header:
-            f.write("timestamp\tevent_type\tlicense_key\tinstitution\temail\tpayload_json\n")
-        timestamp = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        row = [
-            timestamp,
-            str(event_type).strip(),
-            record.license_key,
-            record.institution,
-            record.email,
-            event_payload,
-        ]
-        f.write("\t".join(_tsv_cell(value) for value in row) + "\n")
-    return out
-
-
-def open_tracking_submission(record: LicenseRecord) -> bool:
-    if not record.tracking_submission_url:
-        return False
-    return bool(webbrowser.open(record.tracking_submission_url))
 
 
 def load_model_catalog(source: str | Path | None = None) -> dict[str, Any]:
@@ -186,10 +36,8 @@ def download_and_register_model(
     model_id: str,
     model_root: str | Path,
     catalog_source: str | Path | None = None,
-    license_path: str | Path | None = None,
     overwrite: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
-    record = read_license_record(license_path)
     catalog = load_model_catalog(catalog_source)
     model = _find_model(catalog, model_id)
     root = Path(model_root).expanduser().resolve()
@@ -223,31 +71,8 @@ def download_and_register_model(
         source_model_id=str(model.get("source_model_id", "")),
         make_default=bool(model.get("make_default", True)),
     )
-    append_usage_event(
-        event_type="model_download",
-        payload={"model_id": entry.get("model_id"), "version": entry.get("version")},
-        license_path=license_path,
-    )
-    _write_download_receipt(target_dir, record, model, catalog_source)
+    _write_download_receipt(target_dir, model, catalog_source)
     return registry_path, entry
-
-
-def _generate_license_key(name: str, institution: str, email: str, created_at: str) -> str:
-    nonce = uuid.uuid4().hex
-    seed = "|".join([name, institution, email, created_at, nonce])
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest().upper()
-    return "MS-" + "-".join([digest[0:6], digest[6:12], digest[12:18], digest[18:24]])
-
-
-def _require_text(value: Any, field_name: str) -> str:
-    out = str(value or "").strip()
-    if not out:
-        raise ValueError(f"{field_name} is required")
-    return out
-
-
-def _tsv_cell(value: Any) -> str:
-    return str(value).replace("\t", " ").replace("\n", " ").replace("\r", " ")
 
 
 def _safe_component(value: str) -> str:
@@ -350,15 +175,11 @@ def _sha256(path: Path) -> str:
 
 def _write_download_receipt(
     target_dir: Path,
-    record: LicenseRecord,
     model: dict[str, Any],
     catalog_source: str | Path | None,
 ) -> None:
     payload = {
         "downloaded_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "license_key": record.license_key,
-        "institution": record.institution,
-        "email": record.email,
         "model_id": model.get("model_id", ""),
         "version": model.get("version", ""),
         "catalog_source": str(catalog_source or os.environ.get("MOTIONSCORE_MODEL_CATALOG_URL") or DEFAULT_MODEL_CATALOG_URL),
