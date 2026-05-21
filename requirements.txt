@@ -1,5 +1,6 @@
 opencv-python<4.12
-scikit-image
+scikit-image>=0.24,<0.26
 Pillow
 numpy>=1.23,<2.0
+tifffile<2026
 aimio-py
