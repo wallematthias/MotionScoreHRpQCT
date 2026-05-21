@@ -17,6 +17,9 @@ For most interactive workflows, use the Slicer app:
 - `motionscore explain <derivatives_root> --scan-id <id>`
 - `motionscore train-prepare <derivatives_root>`
 - `motionscore train --manifest <path> --output-model-dir <path>`
+- `motionscore license-register --name <name> --institution <institution> --email <email>`
+- `motionscore license-show`
+- `motionscore model-download --model-id <id>`
 - `motionscore model-register --model-id <id> --model-dir <path> --display-name <name>`
 - `motionscore model-list`
 
@@ -29,11 +32,15 @@ motionscore --help
 motionscore predict --help
 motionscore train-prepare --help
 motionscore train --help
+motionscore license-register --help
+motionscore model-download --help
 ```
 
 ## Notes
 
 - `--confidence-threshold` is a review policy setting (`review-init`), not required for pure prediction.
+- Model-use registration is self-service. `license-register` creates the local key immediately and prints a tracking URL; no manually issued license is required.
+- `model-download` reads a public model catalog, downloads the selected bundle, verifies `sha256` when present, and registers the extracted checkpoints in `model_registry.json`.
 - Retraining is strict fold-aware (`fold_id` required in the manifest).
 - Use `--seed` for deterministic sampling/splitting behavior.
 - Use `--cv-folds` in `train-prepare` to match ensemble checkpoint count.

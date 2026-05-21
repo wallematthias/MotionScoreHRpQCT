@@ -1,1 +1,3 @@
 include requirements.txt
+include CLI_REFERENCE.md
+recursive-include docs *.md *.sql
