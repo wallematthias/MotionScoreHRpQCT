@@ -198,14 +198,14 @@ def test_cmd_predict_upserts_index_after_each_scan(
             index_rows = read_tsv(derivatives / "index.tsv")
             assert len(index_rows) == 1
             assert index_rows[0]["subject_id"] == "SUB1"
-            raise RuntimeError("stop after first checkpoint")
+            raise KeyboardInterrupt("stop after first checkpoint")
         return _FakePrediction()
 
     monkeypatch.setattr(cli, "predict_scan", _predict_then_abort)
 
     args = _predict_args(root)
     args.save_preview_png = False
-    with pytest.raises(RuntimeError, match="stop after first checkpoint"):
+    with pytest.raises(KeyboardInterrupt, match="stop after first checkpoint"):
         cli._cmd_predict(args)
 
 
@@ -256,6 +256,59 @@ def test_cmd_predict_skips_existing_predictions_unless_forced(
     args.force = True
     assert cli._cmd_predict(args) == 0
     assert calls["count"] == 2
+
+
+def test_cmd_predict_continues_after_unreadable_scan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    bad_path = root / "BAD_DT_T1.AIM"
+    good_path = root / "GOOD_DT_T1.AIM"
+    bad_path.write_bytes(b"bad")
+    good_path.write_bytes(b"good")
+    sessions = [
+        RawSession("BAD", "tibia", "T1", bad_path),
+        RawSession("GOOD", "tibia", "T1", good_path),
+    ]
+
+    monkeypatch.setattr(cli, "discover_raw_sessions", lambda **_kwargs: sessions)
+
+    def _read_aim(path, scaling="native"):
+        if Path(path) == bad_path:
+            raise RuntimeError("ios_base::clear: unspecified iostream_category error")
+        return SimpleNamespace(data=np.zeros((8, 8, 4), dtype=np.float32))
+
+    monkeypatch.setattr(cli, "read_aim", _read_aim)
+    monkeypatch.setattr(cli, "predict_scan", lambda *_args, **_kwargs: _FakePrediction())
+    monkeypatch.setattr(
+        __import__("motionscore.inference.model", fromlist=["ModelEnsemble"]),
+        "ModelEnsemble",
+        _FakeEnsemble,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_prediction_preview_png",
+        lambda volume_xyz, prediction, output_path, max_panels=3: output_path,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_slice_profile_png",
+        lambda prediction, output_path: output_path,
+    )
+
+    args = _predict_args(root)
+    args.save_preview_png = False
+    assert cli._cmd_predict(args) == 0
+
+    out = capsys.readouterr().out
+    assert "[predict] sub-BAD_site-tibia_ses-T1" in out
+    assert "failed" in out
+    assert "ios_base::clear" in out
+    assert "[predict] sub-GOOD_site-tibia_ses-T1" in out
+    index_rows = read_tsv(root / "derivatives" / "MotionScore" / "index.tsv")
+    assert len(index_rows) == 1
+    assert index_rows[0]["subject_id"] == "GOOD"
 
 
 def test_cmd_predict_profile_png_missing_dependency(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

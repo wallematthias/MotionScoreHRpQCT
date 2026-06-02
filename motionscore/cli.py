@@ -398,6 +398,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         resolved_model_id = ensemble.resolved_model_id()
         print(f"[predict] using torch device={ensemble.model_device()}")
 
+    failed_scans: list[str] = []
     for session in sessions:
         scan_id = _scan_id_for_session(session)
         storage_model_id = requested_storage_model_id if manual_only else resolved_model_id
@@ -476,16 +477,24 @@ def _cmd_predict(args: argparse.Namespace) -> int:
             prediction = None
             aim_volume = None
         else:
-            aim_volume = read_aim(session.raw_image_path, scaling=args.scaling)
-            prediction = predict_scan(
-                aim_volume.data,
-                ensemble=ensemble,
-                stackheight=int(args.stackheight),
-                on_incomplete_stack=args.on_incomplete_stack,
-                slice_batch_size=int(args.slice_batch_size),
-                slice_step=int(args.slice_step),
-                retain_preprocessed=False,
-            )
+            try:
+                aim_volume = read_aim(session.raw_image_path, scaling=args.scaling)
+                prediction = predict_scan(
+                    aim_volume.data,
+                    ensemble=ensemble,
+                    stackheight=int(args.stackheight),
+                    on_incomplete_stack=args.on_incomplete_stack,
+                    slice_batch_size=int(args.slice_batch_size),
+                    slice_step=int(args.slice_step),
+                    retain_preprocessed=False,
+                )
+            except Exception as exc:
+                failed_scans.append(scan_id)
+                print(f"[predict] {scan_id} failed: {exc} ({session.raw_image_path})")
+                aim_volume = None
+                prediction = None
+                gc.collect()
+                continue
 
         predicted_at = (
             str(existing_prediction_row.get("predicted_at", "")).strip()
@@ -591,6 +600,11 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         aim_volume = None
         gc.collect()
 
+    if failed_scans:
+        print(
+            f"[predict] completed with {len(failed_scans)} failed scan(s): "
+            + ", ".join(failed_scans)
+        )
     print(f"[motionscore] wrote derivatives under: {derivatives_root}")
     return 0
 
