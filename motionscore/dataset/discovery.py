@@ -26,6 +26,23 @@ def _strip_aim_suffix(name: str) -> str:
     return _AIM_WITH_OPTIONAL_VERSION_RE.sub("", name)
 
 
+def _aim_version_alias_key(path: Path) -> tuple[str, str]:
+    return str(path.parent.resolve()), _strip_aim_suffix(path.name).lower()
+
+
+def _aim_version_preference_key(path: Path) -> tuple[int, int, str]:
+    m = re.search(r"(?i)\.aim(?:;(\d+))?$", path.name)
+    version = int(m.group(1)) if m and m.group(1) else None
+    return (1 if version is not None else 0, -(version or 0), path.name.lower())
+
+
+def _deduplicate_aim_version_aliases(paths: list[Path]) -> list[Path]:
+    by_alias: dict[tuple[str, str], list[Path]] = defaultdict(list)
+    for path in paths:
+        by_alias[_aim_version_alias_key(path)].append(path)
+    return [sorted(alias_paths, key=_aim_version_preference_key)[0] for alias_paths in by_alias.values()]
+
+
 def _is_pipeline_managed_copy(path: Path, root: Path) -> bool:
     try:
         rel_parts = [p.lower() for p in path.relative_to(root).parts]
@@ -304,6 +321,7 @@ def discover_raw_sessions(
         image_candidates = [
             p for p, role in items if role == "image" and not any(k in p.name.lower() for k in _EXCLUDE_KEYWORDS)
         ]
+        image_candidates = _deduplicate_aim_version_aliases(image_candidates)
 
         if len(image_candidates) == 0:
             continue

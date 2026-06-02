@@ -36,6 +36,45 @@ def test_discover_plain_aim_filename_fallback(tmp_path: Path) -> None:
     assert sessions[0].output_rel_dir == Path("scan01")
 
 
+def test_discover_deduplicates_aim_version_aliases(tmp_path: Path) -> None:
+    root = tmp_path / "flat"
+    root.mkdir(parents=True, exist_ok=True)
+    _touch(root / "SUB001_RR_T1.AIM")
+    _touch(root / "SUB001_RR_T1.AIM;1")
+
+    sessions = discover_raw_sessions(root, DiscoveryConfig())
+    assert len(sessions) == 1
+    assert sessions[0].subject_id == "SUB001"
+    assert sessions[0].site == "radius_right"
+    assert sessions[0].session_id == "T1"
+    assert sessions[0].raw_image_path == root / "SUB001_RR_T1.AIM"
+
+
+def test_discover_prefers_highest_version_when_only_versioned_aliases_exist(tmp_path: Path) -> None:
+    root = tmp_path / "flat"
+    root.mkdir(parents=True, exist_ok=True)
+    _touch(root / "SUB001_RR_T1.AIM;1")
+    _touch(root / "SUB001_RR_T1.AIM;2")
+
+    sessions = discover_raw_sessions(root, DiscoveryConfig())
+    assert len(sessions) == 1
+    assert sessions[0].raw_image_path == root / "SUB001_RR_T1.AIM;2"
+
+
+def test_discover_keeps_distinct_raw_aim_conflicts_ambiguous(tmp_path: Path) -> None:
+    root = tmp_path / "flat"
+    root.mkdir(parents=True, exist_ok=True)
+    _touch(root / "SUB001_RR_T1_A.AIM")
+    _touch(root / "SUB001_RR_T1_B.AIM")
+
+    try:
+        discover_raw_sessions(root, DiscoveryConfig())
+    except ValueError as exc:
+        assert "Multiple ambiguous raw image AIMs" in str(exc)
+    else:
+        raise AssertionError("Expected distinct raw AIM conflict to remain ambiguous")
+
+
 def test_discover_single_aim_path_input(tmp_path: Path) -> None:
     aim_path = tmp_path / "randomfilename.AIM"
     _touch(aim_path)
