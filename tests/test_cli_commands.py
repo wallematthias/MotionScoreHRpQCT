@@ -159,6 +159,105 @@ def test_cmd_predict_and_review_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert (derivatives / "motion_grades.tsv").exists()
 
 
+def test_cmd_predict_upserts_index_after_each_scan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    sessions = []
+    for idx in range(2):
+        aim_path = root / f"SUB{idx + 1}_DT_T1.AIM"
+        aim_path.write_bytes(b"aim")
+        sessions.append(RawSession(f"SUB{idx + 1}", "tibia", "T1", aim_path))
+
+    monkeypatch.setattr(cli, "discover_raw_sessions", lambda **_kwargs: sessions)
+    monkeypatch.setattr(cli, "read_aim", lambda _p, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 4), dtype=np.float32)))
+    monkeypatch.setattr(
+        __import__("motionscore.inference.model", fromlist=["ModelEnsemble"]),
+        "ModelEnsemble",
+        _FakeEnsemble,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_prediction_preview_png",
+        lambda volume_xyz, prediction, output_path, max_panels=3: output_path,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_slice_profile_png",
+        lambda prediction, output_path: output_path,
+    )
+
+    derivatives = root / "derivatives" / "MotionScore"
+
+    calls = {"count": 0}
+
+    def _predict_then_abort(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            index_rows = read_tsv(derivatives / "index.tsv")
+            assert len(index_rows) == 1
+            assert index_rows[0]["subject_id"] == "SUB1"
+            raise RuntimeError("stop after first checkpoint")
+        return _FakePrediction()
+
+    monkeypatch.setattr(cli, "predict_scan", _predict_then_abort)
+
+    args = _predict_args(root)
+    args.save_preview_png = False
+    with pytest.raises(RuntimeError, match="stop after first checkpoint"):
+        cli._cmd_predict(args)
+
+
+def test_cmd_predict_skips_existing_predictions_unless_forced(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "dataset"
+    root.mkdir()
+    aim_path = root / "SUB1_DT_T1.AIM"
+    aim_path.write_bytes(b"aim")
+    session = RawSession("SUB1", "tibia", "T1", aim_path)
+
+    monkeypatch.setattr(cli, "discover_raw_sessions", lambda **_kwargs: [session])
+    monkeypatch.setattr(cli, "read_aim", lambda _p, scaling="native": SimpleNamespace(data=np.zeros((8, 8, 4), dtype=np.float32)))
+    monkeypatch.setattr(
+        __import__("motionscore.inference.model", fromlist=["ModelEnsemble"]),
+        "ModelEnsemble",
+        _FakeEnsemble,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_prediction_preview_png",
+        lambda volume_xyz, prediction, output_path, max_panels=3: output_path,
+    )
+    monkeypatch.setattr(
+        cli,
+        "write_slice_profile_png",
+        lambda prediction, output_path: output_path,
+    )
+
+    calls = {"count": 0}
+
+    def _predict_once(*_args, **_kwargs):
+        calls["count"] += 1
+        return _FakePrediction()
+
+    monkeypatch.setattr(cli, "predict_scan", _predict_once)
+
+    args = _predict_args(root)
+    args.save_preview_png = False
+    assert cli._cmd_predict(args) == 0
+    assert calls["count"] == 1
+
+    assert cli._cmd_predict(args) == 0
+    assert calls["count"] == 1
+    assert "skipped existing" in capsys.readouterr().out
+
+    args.force = True
+    assert cli._cmd_predict(args) == 0
+    assert calls["count"] == 2
+
+
 def test_cmd_predict_profile_png_missing_dependency(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     root = tmp_path / "dataset"
     root.mkdir()

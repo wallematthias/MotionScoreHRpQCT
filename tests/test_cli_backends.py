@@ -50,6 +50,13 @@ def test_predict_manual_only_flag() -> None:
     assert args.manual_only is True
 
 
+def test_predict_force_flag() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["predict", "/tmp/data", "--force"])
+    assert args.command == "predict"
+    assert args.force is True
+
+
 def test_predict_scan_id_filter_flags() -> None:
     parser = _build_parser()
     args = parser.parse_args(

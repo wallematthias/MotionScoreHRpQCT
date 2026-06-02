@@ -230,6 +230,81 @@ def _legacy_session_output_paths(*, derivatives_root: Path, session: RawSession,
     }
 
 
+def _prediction_row_is_complete(
+    row: dict[str, str],
+    *,
+    scan_id: str,
+    model_id: str,
+    manual_only: bool,
+) -> bool:
+    if str(row.get("scan_id", "")).strip() != scan_id:
+        return False
+    if manual_only:
+        return str(row.get("manual_mode", "")).strip() in {"1", "true", "True"}
+    row_model_id = str(row.get("model_id", "")).strip()
+    if row_model_id and row_model_id != model_id:
+        return False
+    return bool(
+        str(row.get("automatic_grade", "")).strip()
+        and str(row.get("automatic_confidence", "")).strip()
+        and str(row.get("predicted_at", "")).strip()
+    )
+
+
+def _read_complete_prediction_row(
+    path: Path,
+    *,
+    scan_id: str,
+    model_id: str,
+    manual_only: bool,
+) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    for row in read_tsv(path):
+        candidate = dict(row)
+        if _prediction_row_is_complete(
+            candidate,
+            scan_id=scan_id,
+            model_id=model_id,
+            manual_only=manual_only,
+        ):
+            return candidate
+    return {}
+
+
+def _index_row_from_prediction(
+    *,
+    session: RawSession,
+    scan_id: str,
+    prediction_row: dict[str, str],
+    derivatives_root: Path,
+    predictions_tsv: Path,
+    review_tsv: Path,
+    review_json: Path,
+    review_audit: Path,
+    model_id: str,
+    model_version: str,
+) -> dict[str, str]:
+    return {
+        "scan_id": scan_id,
+        "subject_id": session.subject_id,
+        "raw_image_path": str(session.raw_image_path.resolve()),
+        "predictions_tsv": to_relpath(predictions_tsv, derivatives_root),
+        "review_tsv": to_relpath(review_tsv, derivatives_root),
+        "review_json": to_relpath(review_json, derivatives_root),
+        "review_audit": to_relpath(review_audit, derivatives_root),
+        "preview_png_path": prediction_row.get("preview_png_path", ""),
+        "slice_profile_png_path": prediction_row.get("slice_profile_png_path", ""),
+        "attention_map_path": "",
+        "automatic_grade": prediction_row.get("automatic_grade", ""),
+        "automatic_confidence": prediction_row.get("automatic_confidence", ""),
+        "manual_mode": prediction_row.get("manual_mode", ""),
+        "model_id": model_id,
+        "model_version": model_version,
+        "predicted_at": prediction_row.get("predicted_at", ""),
+    }
+
+
 def _cmd_discover(args: argparse.Namespace) -> int:
     cfg = AppConfig()
     sessions = discover_raw_sessions(
@@ -300,6 +375,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         raise ValueError("confidence threshold must be in [0, 100]")
     preview_panels = int(max(1, min(9, int(args.preview_panels))))
     manual_only = bool(getattr(args, "manual_only", False))
+    force = bool(getattr(args, "force", False))
     if manual_only and bool(args.save_preview_png):
         print("[predict] manual-only mode: preview PNG export disabled")
 
@@ -322,7 +398,6 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         resolved_model_id = ensemble.resolved_model_id()
         print(f"[predict] using torch device={ensemble.model_device()}")
 
-    index_updates: list[dict[str, str]] = []
     for session in sessions:
         scan_id = _scan_id_for_session(session)
         storage_model_id = requested_storage_model_id if manual_only else resolved_model_id
@@ -344,6 +419,42 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         review_audit = scoped_paths["review_audit"]
 
         existing_prediction_row = {}
+        if not force:
+            existing_prediction_row = _read_complete_prediction_row(
+                predictions_tsv,
+                scan_id=scan_id,
+                model_id=storage_model_id,
+                manual_only=manual_only,
+            )
+            if existing_prediction_row:
+                initialize_or_update_review(
+                    review_tsv_path=review_tsv,
+                    review_json_path=review_json,
+                    review_audit_path=review_audit,
+                    prediction_rows=[existing_prediction_row],
+                    confidence_threshold=confidence_threshold,
+                    training_mode=bool(args.training_mode),
+                )
+                _upsert_index_rows(
+                    derivatives_root,
+                    [
+                        _index_row_from_prediction(
+                            session=session,
+                            scan_id=scan_id,
+                            prediction_row=existing_prediction_row,
+                            derivatives_root=derivatives_root,
+                            predictions_tsv=predictions_tsv,
+                            review_tsv=review_tsv,
+                            review_json=review_json,
+                            review_audit=review_audit,
+                            model_id=resolved_model_id,
+                            model_version=model_version,
+                        )
+                    ],
+                )
+                print(f"[predict] {scan_id} skipped existing")
+                continue
+
         if manual_only:
             lookup_paths = [predictions_tsv]
             if legacy_paths["predictions_tsv"] != predictions_tsv:
@@ -446,25 +557,22 @@ def _cmd_predict(args: argparse.Namespace) -> int:
             training_mode=bool(args.training_mode),
         )
 
-        index_updates.append(
-            {
-                "scan_id": scan_id,
-                "subject_id": session.subject_id,
-                "raw_image_path": str(session.raw_image_path.resolve()),
-                "predictions_tsv": to_relpath(predictions_tsv, derivatives_root),
-                "review_tsv": to_relpath(review_tsv, derivatives_root),
-                "review_json": to_relpath(review_json, derivatives_root),
-                "review_audit": to_relpath(review_audit, derivatives_root),
-                "preview_png_path": prediction_row.get("preview_png_path", ""),
-                "slice_profile_png_path": prediction_row.get("slice_profile_png_path", ""),
-                "attention_map_path": "",
-                "automatic_grade": prediction_row["automatic_grade"],
-                "automatic_confidence": prediction_row["automatic_confidence"],
-                "manual_mode": prediction_row["manual_mode"],
-                "model_id": resolved_model_id,
-                "model_version": model_version,
-                "predicted_at": predicted_at,
-            }
+        _upsert_index_rows(
+            derivatives_root,
+            [
+                _index_row_from_prediction(
+                    session=session,
+                    scan_id=scan_id,
+                    prediction_row=prediction_row,
+                    derivatives_root=derivatives_root,
+                    predictions_tsv=predictions_tsv,
+                    review_tsv=review_tsv,
+                    review_json=review_json,
+                    review_audit=review_audit,
+                    model_id=resolved_model_id,
+                    model_version=model_version,
+                )
+            ],
         )
 
         if manual_only:
@@ -483,7 +591,6 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         aim_volume = None
         gc.collect()
 
-    _upsert_index_rows(derivatives_root, index_updates)
     print(f"[motionscore] wrote derivatives under: {derivatives_root}")
     return 0
 
@@ -878,6 +985,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--manual-only",
         action="store_true",
         help="Initialize review pipeline without CNN inference (manual grading only).",
+    )
+    predict.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess scans even when matching prediction outputs already exist.",
     )
     predict.add_argument("--preview-panels", type=int, default=3, help="Number of slice panels in preview PNG (1-9)")
     predict.add_argument("--preview-png", dest="save_preview_png", action="store_true", default=True, help="Save per-scan preview PNG into derivatives")
