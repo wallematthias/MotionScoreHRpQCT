@@ -9,7 +9,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -179,7 +179,7 @@ def _write_download_receipt(
     catalog_source: str | Path | None,
 ) -> None:
     payload = {
-        "downloaded_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "downloaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "model_id": model.get("model_id", ""),
         "version": model.get("version", ""),
         "catalog_source": str(catalog_source or os.environ.get("MOTIONSCORE_MODEL_CATALOG_URL") or DEFAULT_MODEL_CATALOG_URL),
