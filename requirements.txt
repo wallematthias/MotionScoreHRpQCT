@@ -1,7 +1,7 @@
-opencv-python<4.12
-scikit-image>=0.24,<0.26
+opencv-python>=4.8,<5
+scikit-image>=0.24,<0.27
 Pillow
 matplotlib
-numpy>=1.23,<2.0
+numpy>=1.23,<3.0
 tifffile<2026
 aimio-py

@@ -17,7 +17,7 @@ common_requirements = load_requirements('requirements.txt')
 
 setup(
     name='motionscorehrpqct',
-    version='2.5.9',
+    version='2.5.10',
     author='Matthias Walle',
     author_email='matthias.walle@ucalgary.ca',
     description='MotionScoreHRpQCT core CLI for dataset-first HR-pQCT motion grading',
@@ -49,6 +49,8 @@ setup(
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
+        'Programming Language :: Python :: 3.13',
+        'Programming Language :: Python :: 3.14',
         'Operating System :: OS Independent',
     ],
     entry_points={
