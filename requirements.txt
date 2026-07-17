@@ -4,4 +4,4 @@ Pillow
 matplotlib
 numpy>=1.23,<3.0
 tifffile<2026
-aimio-py
+aimio-py>=0.1.9
