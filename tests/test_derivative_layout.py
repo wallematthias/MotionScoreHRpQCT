@@ -12,6 +12,12 @@ def test_derivatives_default_root() -> None:
 def test_derivatives_custom_output_root() -> None:
     root = Path("/tmp/my_dataset")
     out = Path("/tmp/results")
+    assert get_derivatives_root(root, out) == out / "derivatives" / "MotionScore"
+
+
+def test_derivatives_selected_derivatives_root_does_not_nest_derivatives() -> None:
+    root = Path("/tmp/my_dataset")
+    out = Path("/tmp/results/derivatives")
     assert get_derivatives_root(root, out) == out / "MotionScore"
 
 

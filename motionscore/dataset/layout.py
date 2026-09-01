@@ -13,7 +13,9 @@ def get_derivatives_root(input_root: str | Path, output_root: str | Path | None 
         root = Path(output_root)
         if root.name == PIPELINE_NAME:
             return root
-        return root / PIPELINE_NAME
+        if root.name == "derivatives":
+            return root / PIPELINE_NAME
+        return root / "derivatives" / PIPELINE_NAME
 
     input_root = Path(input_root)
     derivatives = input_root / "derivatives" / PIPELINE_NAME
