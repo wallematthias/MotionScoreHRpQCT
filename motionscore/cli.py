@@ -366,6 +366,8 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         print(f"[motionscore] no AIM scans discovered under {args.input_root}")
         return 0
 
+    print(f"[predict] total={len(sessions)}")
+
     derivatives_root = get_derivatives_root(args.input_root, args.output_root).resolve()
     derivatives_root.mkdir(parents=True, exist_ok=True)
     _write_dataset_description(derivatives_root)

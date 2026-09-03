@@ -27,13 +27,13 @@ def get_subject_dir(derivatives_root: str | Path, subject_id: str) -> Path:
 
 
 def get_site_dir(derivatives_root: str | Path, subject_id: str, site: str) -> Path:
-    return get_subject_dir(derivatives_root, subject_id) / f"site-{site}"
+    return get_subject_dir(derivatives_root, subject_id) / "xct" / f"voi-{site}"
 
 
 def get_session_dir(derivatives_root: str | Path, session: RawSession) -> Path:
     if session.output_rel_dir:
         return Path(derivatives_root) / session.output_rel_dir
-    return get_site_dir(derivatives_root, session.subject_id, session.site) / f"ses-{session.session_id}"
+    return get_subject_dir(derivatives_root, session.subject_id) / f"ses-{session.session_id}" / "xct" / f"voi-{session.site}"
 
 
 def get_predictions_dir(derivatives_root: str | Path, session: RawSession) -> Path:

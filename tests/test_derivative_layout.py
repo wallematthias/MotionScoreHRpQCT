@@ -35,7 +35,7 @@ def test_preview_dir_layout() -> None:
         raw_image_path=Path("/tmp/raw.aim"),
     )
     derivatives = Path("/tmp/my_dataset/derivatives/MotionScore")
-    expected = derivatives / "sub-001" / "site-tibia" / "ses-T1" / "preview"
+    expected = derivatives / "sub-001" / "ses-T1" / "xct" / "voi-tibia" / "preview"
     assert get_preview_dir(derivatives, session) == expected
 
 

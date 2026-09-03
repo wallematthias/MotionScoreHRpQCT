@@ -5,16 +5,23 @@ from collections import defaultdict
 from pathlib import Path
 
 from motionscore.config import DiscoveryConfig
-from motionscore.dataset.layout import PIPELINE_NAME
 from motionscore.dataset.models import RawSession
 
 _AIM_WITH_OPTIONAL_VERSION_RE = re.compile(r"(?i)\.aim(?:;\d+)?$")
+_NORMALIZED_AIM_RE = re.compile(
+    r"(?i)^sub-(?P<subject>.+?)_site-(?P<site>.+?)_ses-(?P<session>.+?)"
+    r"(?:_stack-(?P<stack>\d+))?_(?P<suffix>image|mask-[A-Za-z0-9_-]+)\.aim(?:;\d+)?$"
+)
+_MIDS_XCT_AIM_RE = re.compile(
+    r"(?i)^sub-(?P<subject>.+?)_ses-(?P<session>.+?)_voi-(?P<site>.+?)"
+    r"(?:_stack-(?P<stack>\d+))?_xct\.aim(?:;\d+)?$"
+)
 _EXCLUDE_KEYWORDS = ("mask", "trab", "cort", "full", "regmask", "seg", "roi")
 _HEADER_SITE_CODE_MAP = {
-    "20": "radius_left",
-    "21": "radius_right",
-    "38": "tibia_left",
-    "29": "tibia_right",
+    "20": "radiusleft",
+    "21": "radiusright",
+    "38": "tibialeft",
+    "29": "tibiaright",
 }
 
 
@@ -49,10 +56,7 @@ def _is_pipeline_managed_copy(path: Path, root: Path) -> bool:
     except ValueError:
         return False
 
-    for i in range(len(rel_parts) - 1):
-        if rel_parts[i] == "derivatives" and rel_parts[i + 1] == PIPELINE_NAME.lower():
-            return True
-    return False
+    return "derivatives" in rel_parts
 
 
 def _normalize_site(site_token: str | None, cfg: DiscoveryConfig) -> str | None:
@@ -114,6 +118,32 @@ def _extract_stack_index(path: Path) -> int | None:
 
 
 def _extract_by_regex(path: Path, cfg: DiscoveryConfig) -> tuple[str, str, str | None, int | None, str]:
+    mids = _MIDS_XCT_AIM_RE.match(path.name)
+    if mids:
+        groups = mids.groupdict()
+        stack_text = groups.get("stack")
+        return (
+            groups["subject"],
+            _normalize_session(groups["session"], cfg),
+            _normalize_site(groups["site"], cfg),
+            int(stack_text) if stack_text else None,
+            "image",
+        )
+
+    normalized = _NORMALIZED_AIM_RE.match(path.name)
+    if normalized:
+        groups = normalized.groupdict()
+        suffix = groups["suffix"].lower()
+        role = "image" if suffix == "image" else "derived"
+        stack_text = groups.get("stack")
+        return (
+            groups["subject"],
+            _normalize_session(groups["session"], cfg),
+            _normalize_site(groups["site"], cfg),
+            int(stack_text) if stack_text else None,
+            role,
+        )
+
     m = re.search(cfg.session_regex, path.name)
     if not m:
         raise ValueError("filename did not match discovery regex")
@@ -255,12 +285,14 @@ def _extract_from_header(path: Path, cfg: DiscoveryConfig) -> tuple[str, str, st
     return subject, session, site, stack_index, role
 
 
-def _compute_output_rel_dir(root: Path, raw_image_path: Path) -> Path:
+def _compute_output_rel_dir(root: Path, raw_image_path: Path, site: str | None = None) -> Path:
     try:
         rel_parent = raw_image_path.relative_to(root).parent
     except ValueError:
         rel_parent = Path(".")
 
+    if raw_image_path.parent.name.lower() == "xct" and site:
+        return rel_parent / f"voi-{site}"
     if rel_parent == Path("."):
         return Path(_strip_aim_suffix(raw_image_path.name))
     return rel_parent
@@ -337,7 +369,7 @@ def discover_raw_sessions(
             session_id=session,
             raw_image_path=image_candidates[0],
             stack_index=stack_index,
-            output_rel_dir=_compute_output_rel_dir(search_root, image_candidates[0]),
+            output_rel_dir=_compute_output_rel_dir(search_root, image_candidates[0], site),
         )
         raw_session.validate()
         sessions.append(raw_session)

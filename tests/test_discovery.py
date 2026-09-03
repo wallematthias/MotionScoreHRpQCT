@@ -45,9 +45,39 @@ def test_discover_deduplicates_aim_version_aliases(tmp_path: Path) -> None:
     sessions = discover_raw_sessions(root, DiscoveryConfig())
     assert len(sessions) == 1
     assert sessions[0].subject_id == "SUB001"
-    assert sessions[0].site == "radius_right"
+    assert sessions[0].site == "radiusright"
     assert sessions[0].session_id == "T1"
     assert sessions[0].raw_image_path == root / "SUB001_RR_T1.AIM"
+
+
+def test_discover_accepts_normalized_bids_like_aims_with_version_suffix(tmp_path: Path) -> None:
+    root = tmp_path / "flat"
+    root.mkdir(parents=True, exist_ok=True)
+    _touch(root / "sub-STRAMBO_0001_site-radius_left_ses-00_image.AIM")
+    _touch(root / "sub-STRAMBO_0001_site-radius_left_ses-04_image.AIM;1")
+    _touch(root / "sub-STRAMBO_0001_site-radius_left_ses-08_image.AIM;1")
+
+    sessions = discover_raw_sessions(root, DiscoveryConfig())
+
+    assert [(s.subject_id, s.site, s.session_id) for s in sessions] == [
+        ("STRAMBO_0001", "radiusleft", "00"),
+        ("STRAMBO_0001", "radiusleft", "04"),
+        ("STRAMBO_0001", "radiusleft", "08"),
+    ]
+
+
+def test_discover_accepts_mids_style_voi_xct_layout(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    _touch(root / "sub-001" / "ses-001" / "xct" / "sub-001_ses-001_voi-radiusleft_xct.AIM")
+    _touch(root / "sub-001" / "ses-002" / "xct" / "sub-001_ses-002_voi-radiusright_xct.AIM")
+
+    sessions = discover_raw_sessions(root, DiscoveryConfig())
+
+    assert [(s.subject_id, s.site, s.session_id) for s in sessions] == [
+        ("001", "radiusleft", "001"),
+        ("001", "radiusright", "002"),
+    ]
+    assert sessions[0].output_rel_dir == Path("sub-001") / "ses-001" / "xct" / "voi-radiusleft"
 
 
 def test_discover_prefers_highest_version_when_only_versioned_aliases_exist(tmp_path: Path) -> None:
@@ -117,6 +147,34 @@ def test_discover_ignores_derivatives_copy(tmp_path: Path) -> None:
     copied.write_text("", encoding="utf-8")
 
     sessions = discover_raw_sessions(tmp_path, DiscoveryConfig())
+    assert len(sessions) == 1
+    assert sessions[0].raw_image_path == raw
+
+
+def test_discover_ignores_all_derivative_families(tmp_path: Path) -> None:
+    raw = tmp_path / "sub-001" / "ses-001" / "xct" / "sub-001_ses-001_voi-radiusleft_xct.AIM"
+    _touch(raw)
+    _touch(
+        tmp_path
+        / "derivatives"
+        / "BoneContours"
+        / "sub-001"
+        / "ses-001"
+        / "xct"
+        / "sub-001_ses-001_voi-radiusleft_desc-full_mask.AIM"
+    )
+    _touch(
+        tmp_path
+        / "derivatives"
+        / "ParOSolFEA"
+        / "sub-001"
+        / "ses-001"
+        / "xct"
+        / "sub-001_ses-001_voi-radiusleft_desc-fea-materials_label.AIM"
+    )
+
+    sessions = discover_raw_sessions(tmp_path, DiscoveryConfig())
+
     assert len(sessions) == 1
     assert sessions[0].raw_image_path == raw
 

@@ -471,8 +471,8 @@ def test_cmd_predict_stores_outputs_side_by_side_per_model(
     assert cli._cmd_predict(args_b) == 0
 
     derivatives = root / "derivatives" / "MotionScore"
-    base_pred = derivatives / "sub-SUB1" / "site-tibia" / "ses-T1" / "predictions" / "models" / "base-v1" / "predictions.tsv"
-    knee_pred = derivatives / "sub-SUB1" / "site-tibia" / "ses-T1" / "predictions" / "models" / "knee-v1" / "predictions.tsv"
+    base_pred = derivatives / "sub-SUB1" / "ses-T1" / "xct" / "voi-tibia" / "predictions" / "models" / "base-v1" / "predictions.tsv"
+    knee_pred = derivatives / "sub-SUB1" / "ses-T1" / "xct" / "voi-tibia" / "predictions" / "models" / "knee-v1" / "predictions.tsv"
     assert base_pred.exists()
     assert knee_pred.exists()
 
